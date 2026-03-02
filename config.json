@@ -1,0 +1,10 @@
+{
+    "cache": {
+        "ttlMs": 60000,
+        "pollingIntervalMs": 300000,
+        "timeRange": {
+            "pastDays": 7,
+            "futureDays": 1
+        }
+    }
+}

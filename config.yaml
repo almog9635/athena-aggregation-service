@@ -1,0 +1,6 @@
+cache:
+  ttlMs: 300000 # 5 minutes for prod
+  pollingIntervalMs: 600000 # 10 minutes for prod
+  timeRange:
+    pastDays: 14
+    futureDays: 3
