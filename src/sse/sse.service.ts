@@ -184,6 +184,7 @@ export class SseService implements OnModuleDestroy {
     await this.streamDiff(session, diff);
   }
 
+
   /**
    * Broadcast an update when a given entity has a new version.
    * Iterates all sessions and pushes diffs for those who need them.
