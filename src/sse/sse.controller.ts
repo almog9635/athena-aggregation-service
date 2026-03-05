@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import express from 'express';
 import { SseService } from './sse.service';
+import { MockDataService } from './providers/mock-data.service';
 import { EventsQueryDto } from './dto/events-query.dto';
 import { ChangeRangeDto } from './dto/change-range.dto';
 
@@ -20,7 +21,10 @@ interface RequestWithUser extends express.Request {
 
 @Controller('sse')
 export class SseController {
-  constructor(private readonly sseService: SseService) {}
+  constructor(
+    private readonly sseService: SseService,
+    private readonly mockDataService: MockDataService,
+  ) {}
 
   @Get('events')
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
@@ -50,12 +54,10 @@ export class SseController {
 
   @Get('entity/:id/details')
   async getEntityDetails(@Param('id') id: string) {
-    // Return mocked extended details
-    return {
-      entityId: id,
-      extendedDescription: `On-demand details for entity ${id}`,
-      lastUpdated: new Date().toISOString(),
-      metadata: { source: 'aggregation-service', riskLevel: 'low' },
-    };
+    const details = this.mockDataService.getExtraDetails(id);
+    if (!details) {
+      throw new BadRequestException(`Entity with ID ${id} not found`);
+    }
+    return details;
   }
 }

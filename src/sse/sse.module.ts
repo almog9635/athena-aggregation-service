@@ -3,13 +3,13 @@ import { ConfigModule } from '@nestjs/config';
 import { SseController } from './sse.controller';
 import { SseService } from './sse.service';
 import { SessionRegistryService } from './session-registry.service';
-import { EmptyDiffService } from './providers/empty-diff.service';
+import { MockDataService } from './providers/mock-data.service';
 
 @Module({
   imports: [ConfigModule],
   controllers: [SseController],
-  providers: [SseService, SessionRegistryService, EmptyDiffService],
-  exports: [SseService],
+  providers: [SseService, SessionRegistryService, MockDataService],
+  exports: [SseService, MockDataService],
 })
 export class SseModule {
   // this module expects a provider for DiffService to be registered

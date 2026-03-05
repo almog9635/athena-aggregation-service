@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ConfigService } from '@nestjs/config';
 import { SessionRegistryService } from './session-registry.service';
 import { DiffEntityResult } from './types/diff';
-import { EmptyDiffService } from './providers/empty-diff.service';
+import { MockDataService } from './providers/mock-data.service';
 import { Session } from './types/session';
 import { EventsQueryDto } from './dto/events-query.dto';
 
@@ -12,8 +12,18 @@ type SseResponse = Response & { flushHeaders?: () => void };
 
 interface DiffPayload {
   entityName: string;
+  entityId: string;
   version: number;
   data: unknown;
+}
+
+interface ChunkPayload {
+  entityName: string;
+  entityId: string;
+  version: number;
+  chunkIndex: number;
+  totalChunks: number;
+  payloadFragment: string;
 }
 
 @Injectable()
@@ -31,7 +41,7 @@ export class SseService implements OnModuleDestroy {
   constructor(
     private readonly config: ConfigService,
     private readonly registry: SessionRegistryService,
-    private readonly diffService: EmptyDiffService,
+    private readonly mockDataService: MockDataService,
   ) {
     this.maxPayloadBytes =
       this.config.get<number>('SSE_MAX_PAYLOAD_MB', 10) * 1024 * 1024;
@@ -62,6 +72,11 @@ export class SseService implements OnModuleDestroy {
       () => this.pruneOldSessions(),
       60 * 60 * 1000,
     );
+
+    // subscribe to mock data updates
+    this.mockDataService.updates$.subscribe((diff) => {
+      void this.broadcastEntityUpdate(diff);
+    });
   }
 
   onModuleDestroy() {
@@ -173,7 +188,7 @@ export class SseService implements OnModuleDestroy {
     );
 
     // initial sync
-    const diff = this.diffService.getDiff(
+    const diff = this.mockDataService.getDiff(
       session.squadronIds,
       session.startDate,
       session.endDate,
@@ -267,9 +282,22 @@ export class SseService implements OnModuleDestroy {
       return;
     }
 
-    for (const entity of diff) {
+    const filteredDiff = diff.filter(entity => {
+      const entityData = entity.data as any;
+      if (session.dataGroup && entityData.dataGroup !== session.dataGroup) return false;
+      
+      if (entityData.dataGroup === 'week' && entityData.date) {
+          const eDate = new Date(entityData.date);
+          if (session.startDate && eDate < new Date(session.startDate)) return false;
+          if (session.endDate && eDate > new Date(session.endDate)) return false;
+      }
+      return true;
+    });
+
+    for (const entity of filteredDiff) {
       const payload: DiffPayload = {
         entityName: entity.entityName,
+        entityId: entity.entityId,
         version: entity.version,
         data: entity.data,
       };
@@ -292,7 +320,7 @@ export class SseService implements OnModuleDestroy {
 
     const data = json ?? JSON.stringify(payload);
     try {
-      await this.sendEvent(session.response, 'diff', data);
+      await this.sendEvent(session.response, 'data-bulk', data);
     } catch (err) {
       this.logger.error(`unable to send bulk to ${session.sessionId}`, err);
     }
@@ -306,15 +334,24 @@ export class SseService implements OnModuleDestroy {
     const totalChunks = Math.ceil(totalBytes / this.chunkSizeBytes);
 
     for (let idx = 0; idx < totalChunks; idx++) {
-      const chunk = json.slice(
+      const fragment = json.slice(
         idx * this.chunkSizeBytes,
         (idx + 1) * this.chunkSizeBytes,
       );
-      await this.sendEvent(session.response, 'diff-chunk', chunk);
+      const chunkPayload: ChunkPayload = {
+        entityName: payload.entityName,
+        entityId: payload.entityId,
+        version: payload.version,
+        chunkIndex: idx,
+        totalChunks,
+        payloadFragment: fragment,
+      };
+      await this.sendEvent(session.response, 'data-chunk', JSON.stringify(chunkPayload));
     }
 
     const donePayload = {
       entityName: payload.entityName,
+      entityId: payload.entityId,
       version: payload.version,
     };
     await this.sendEvent(
