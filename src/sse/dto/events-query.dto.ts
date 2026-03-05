@@ -8,10 +8,23 @@ import {
 import { Transform } from 'class-transformer';
 
 export class EventsQueryDto {
+  @IsString()
+  userId: string;
+
+  @Transform(({ value }) => {
+    if (typeof value === 'string') {
+      return [value];
+    }
+    return value;
+  })
   @IsArray()
   @ArrayNotEmpty()
   @IsString({ each: true })
   squadronIds: string[];
+
+  @IsString()
+  @IsOptional()
+  dataGroup?: string;
 
   @IsISO8601()
   @IsOptional()
@@ -21,20 +34,19 @@ export class EventsQueryDto {
   @IsOptional()
   endDate?: string;
 
-  @IsString()
   @IsOptional()
   @Transform(({ value }) => {
     if (!value) {
       return undefined;
     }
     if (typeof value === 'object') {
-      return value as Record<string, number>;
+      return value as Record<string, Record<string, number>>;
     }
     try {
-      return JSON.parse(value) as Record<string, number>;
+      return JSON.parse(value) as Record<string, Record<string, number>>;
     } catch {
       return undefined;
     }
   })
-  entityVersions?: Record<string, number>;
+  entityVersions?: Record<string, Record<string, number>>;
 }

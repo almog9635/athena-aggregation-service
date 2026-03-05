@@ -1,14 +1,13 @@
 import {
   Controller,
   Get,
-  Post,
-  Query,
-  Body,
   Req,
+  Query,
   Res,
   UsePipes,
   ValidationPipe,
   BadRequestException,
+  Param,
 } from '@nestjs/common';
 import express from 'express';
 import { SseService } from './sse.service';
@@ -16,7 +15,7 @@ import { EventsQueryDto } from './dto/events-query.dto';
 import { ChangeRangeDto } from './dto/change-range.dto';
 
 interface RequestWithUser extends express.Request {
-  user?: { id?: string };
+  userId?: string;
 }
 
 @Controller('sse')
@@ -31,7 +30,7 @@ export class SseController {
     @Query() query: EventsQueryDto,
   ) {
     try {
-      const userId = req.user?.id;
+      const userId = query.userId;
       if (!userId) {
         // missing user id is an error
         throw new BadRequestException('userId is required');
@@ -49,15 +48,14 @@ export class SseController {
     }
   }
 
-  @Post('change-range')
-  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
-  async changeRange(@Body() dto: ChangeRangeDto) {
-    try {
-      await this.sseService.changeRange(dto);
-      return { ok: true };
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'unknown error';
-      throw new BadRequestException(errorMessage);
-    }
+  @Get('entity/:id/details')
+  async getEntityDetails(@Param('id') id: string) {
+    // Return mocked extended details
+    return {
+      entityId: id,
+      extendedDescription: `On-demand details for entity ${id}`,
+      lastUpdated: new Date().toISOString(),
+      metadata: { source: 'aggregation-service', riskLevel: 'low' },
+    };
   }
 }

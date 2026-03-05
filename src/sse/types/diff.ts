@@ -1,5 +1,6 @@
 export interface DiffEntityResult {
   entityName: string;
+  entityId: string;
   version: number;
   data: unknown;
 }
@@ -9,6 +10,7 @@ export abstract class DiffService {
     squadronIds: string[],
     startDate: string,
     endDate: string,
-    entityVersions?: Record<string, number>,
+    entityVersions?: Record<string, Record<string, number>>,
+    dataGroup?: string,
   ): DiffEntityResult[];
 }

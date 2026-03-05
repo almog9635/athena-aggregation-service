@@ -154,6 +154,7 @@ export class SseService implements OnModuleDestroy {
       squadronIds: params.squadronIds,
       startDate: start,
       endDate: end,
+      dataGroup: params.dataGroup,
       response: res,
       createdAt: Date.now(),
     };
@@ -176,40 +177,8 @@ export class SseService implements OnModuleDestroy {
       session.squadronIds,
       session.startDate,
       session.endDate,
-    );
-
-    await this.streamDiff(session, diff);
-  }
-
-  /**
-   * Public change-of-range endpoint behavior.
-   */
-  async changeRange(dto: {
-    sessionId: string;
-    startDate: string;
-    endDate: string;
-    entityVersions?: Record<string, number>;
-  }): Promise<void> {
-    const session = this.registry.findById(dto.sessionId);
-    if (!session) {
-      throw new Error('session_not_found');
-    }
-
-    if (isNaN(Date.parse(dto.startDate)) || isNaN(Date.parse(dto.endDate))) {
-      throw new Error('invalid_date');
-    }
-    if (new Date(dto.startDate) > new Date(dto.endDate)) {
-      throw new Error('invalid_date_range');
-    }
-
-    session.startDate = dto.startDate;
-    session.endDate = dto.endDate;
-
-    const diff = this.diffService.getDiff(
-      session.squadronIds,
-      session.startDate,
-      session.endDate,
-      dto.entityVersions ?? {},
+      undefined,
+      session.dataGroup,
     );
 
     await this.streamDiff(session, diff);
