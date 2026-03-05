@@ -4,8 +4,10 @@ import {
   IsString,
   IsArray,
   ArrayNotEmpty,
+  IsEnum,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { dataGroup, type DataGroup } from '../types/dataGroup';
 
 export class EventsQueryDto {
   @IsString()
@@ -22,9 +24,9 @@ export class EventsQueryDto {
   @IsString({ each: true })
   squadronIds: string[];
 
-  @IsString()
+  @IsEnum(dataGroup)
   @IsOptional()
-  dataGroup?: string;
+  dataGroup?: DataGroup;
 
   @IsISO8601()
   @IsOptional()

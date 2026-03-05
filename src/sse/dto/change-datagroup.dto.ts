@@ -1,11 +1,12 @@
-import { IsString, IsNotEmpty } from 'class-validator';
+import { IsString, IsNotEmpty, IsIn } from 'class-validator';
+import { dataGroup, type DataGroup } from '../types/dataGroup';
 
 export class ChangeDataGroupDto {
   @IsString()
   @IsNotEmpty()
   sessionId: string;
 
-  @IsString()
   @IsNotEmpty()
-  dataGroup: string;
+  @IsIn(Object.values(dataGroup))
+  dataGroup: DataGroup;
 }
