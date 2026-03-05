@@ -1,296 +1,525 @@
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Subject } from 'rxjs';
 import type { CacheConfig } from './interfaces/cache-config.interface';
 import type { IEntity, ITimeDependentEntity } from './interfaces/entity.interface';
 import { DefaultCacheLogger, type ICacheLogger } from './logger/cache-logger.service';
 import { deepMerge, mergeChanges } from './utils/merge.util';
-
-export interface CacheItem<T> {
-    data: T;
-    refCount: number;
-    ttlTimeout: NodeJS.Timeout | null;
-}
+import type { CacheItem } from './interfaces/cache-item';
+import { CacheErrorMessage } from './enums/error-message.enum';
+import { CacheLogMessage } from './enums/log-message.enum';
 
 @Injectable()
 export class CacheManager<T extends IEntity> implements OnModuleInit, OnModuleDestroy {
-    // Store Time-Independent items
-    private readonly timeIndependentMap = new Map<string, CacheItem<T>>();
 
-    // Store Time-Dependent items: Day -> Name -> CacheItem
-    // Because an entity spanning multiple days shares the exact same reference in memory,
-    // the exact same `CacheItem<T>` instance will be stored under multiple `day` maps.
-    private readonly timeDependentMap = new Map<string, Map<string, CacheItem<T>>>();
+    // Store Time-Independent items: Name -> ID -> CacheItem
+    private readonly timeIndependentMap = new Map<string, Map<string, CacheItem<T>>>();
+
+    // Store Time-Dependent items: Day -> Name -> ID -> CacheItem
+    private readonly timeDependentMap = new Map<string, Map<string, Map<string, CacheItem<T>>>>();
 
     // Tracks items that are actively being aggregated (to prevent concurrent identical fetches)
-    private readonly pendingAggregations = new Map<string, Promise<T>>();
+    private readonly pendingAggregations = new Map<string, Promise<T[]>>();
+    private readonly fullyLoadedKeys = new Set<string>();
 
-    private readonly pollingIntervalId: NodeJS.Timeout | null = null;
-    private readonly rolloverIntervalId: NodeJS.Timeout | null = null;
+    public readonly onEntityUpdated = new Subject<T>();
+
+    private pollingIntervalId: NodeJS.Timeout | null = null;
+    private rolloverIntervalId: NodeJS.Timeout | null = null;
 
     constructor(
         @Inject('CACHE_CONFIG') private readonly config: CacheConfig<T>,
         @Inject('CACHE_LOGGER') private readonly logger: ICacheLogger = new DefaultCacheLogger(),
     ) { }
 
-    onModuleInit() {
+    async onModuleInit() {
         this.startBackgroundTasks();
+        await this.preloadConfiguredDays();
     }
 
     onModuleDestroy() {
-        if (this.pollingIntervalId) clearInterval(this.pollingIntervalId);
-        if (this.rolloverIntervalId) clearInterval(this.rolloverIntervalId);
+
+        if (this.pollingIntervalId) {
+            clearInterval(this.pollingIntervalId);
+        }
+
+        if (this.rolloverIntervalId) {
+            clearInterval(this.rolloverIntervalId);
+        }
 
         // Clear all active TTL timers to prevent memory leaks on shutdown
-        for (const item of this.timeIndependentMap.values()) {
-            if (item.ttlTimeout) clearTimeout(item.ttlTimeout);
+        for (const nameMap of this.timeIndependentMap.values()) {
+            for (const item of nameMap.values()) {
+                if (item.ttlTimeout) clearTimeout(item.ttlTimeout);
+            }
         }
         for (const dayMap of this.timeDependentMap.values()) {
-            for (const item of dayMap.values()) {
-                if (item.ttlTimeout) clearTimeout(item.ttlTimeout);
+            for (const nameMap of dayMap.values()) {
+                for (const item of nameMap.values()) {
+                    if (item.ttlTimeout) clearTimeout(item.ttlTimeout);
+                }
             }
         }
     }
 
     /**
-     * Acquires an entity from the cache.
-     * If it doesn't exist, it aggregates it from the sources.
+     * Acquires all entities of a specific name from the cache.
+     * If they haven't been fetched yet, aggregates them from sources.
      */
-    async acquire(name: string, days?: string[]): Promise<T> {
+    async acquire(entityName: string, days?: string[]): Promise<T[]> {
+        const aggregationKey = this.getAggregationKey(entityName, days);
 
-        // Check if we already have a loaded CacheItem
-        const cacheItem = this.getExistingCacheItem(name, days);
+        if (this.fullyLoadedKeys.has(aggregationKey)) {
+            const results: T[] = [];
+            const nameMap = this.getCacheNameMap(entityName, days);
 
-        if (cacheItem) {
-            this.logger.logHit(name, days);
-            cacheItem.refCount++;
-
-            // If a TTL timeout was ticking, cancel it because a user just acquired it
-            if (cacheItem.ttlTimeout) {
-                clearTimeout(cacheItem.ttlTimeout);
-                cacheItem.ttlTimeout = null;
-                this.logger.logTtlCancel(name, days);
+            if (nameMap) {
+                for (const item of nameMap.values()) {
+                    item.refCount++;
+                    this.cancelTtl(item, entityName, item.data.id, days);
+                    results.push(item.data);
+                }
             }
-            return cacheItem.data;
+
+            this.logger.logHit(entityName, days);
+
+            return results;
         }
 
-        this.logger.logMiss(name, days);
-
-        // If a request for this exact entity is already in flight, wait for it instead of duplicating work
-        const aggregationKey = this.getAggregationKey(name, days);
         if (this.pendingAggregations.has(aggregationKey)) {
-            return this.pendingAggregations.get(aggregationKey)!;
+            this.logger.logAggregationStart(`${entityName} (${CacheLogMessage.REUSING_PENDING_PROMISE})`, days);
+            const results = await this.pendingAggregations.get(aggregationKey)!;
+
+            for (const res of results) {
+                const cachedItem = this.getExistingCacheItem(entityName, res.id, days);
+                if (cachedItem) {
+                    cachedItem.refCount++;
+                    this.cancelTtl(cachedItem, entityName, res.id, days);
+                }
+            }
+
+            return results;
         }
 
-        // Otherwise, perform the aggregation and store the promise
-        const aggregationPromise = this.aggregateFromSources(name, days).then((data) => {
-            this.storeInCache(data, name, days);
+        this.logger.logMiss(entityName, days);
+        this.logger.logAggregationStart(`${entityName} (${CacheLogMessage.NEW_AGGREGATION})`, days);
+
+        const aggregationPromise = this.aggregateFromSources(entityName, days).then((results) => {
+            this.fullyLoadedKeys.add(aggregationKey);
             this.pendingAggregations.delete(aggregationKey);
 
-            // We immediately increment the refCount for the caller who triggered this
-            const storedItem = this.getExistingCacheItem(name, days)!;
-            storedItem.refCount++;
+            for (const data of results) {
+                const storedItem = this.getExistingCacheItem(entityName, data.id, days);
+                if (storedItem) storedItem.refCount++;
+            }
 
-            return data;
+            return results;
         }).catch(err => {
             this.pendingAggregations.delete(aggregationKey);
             throw err;
         });
 
         this.pendingAggregations.set(aggregationKey, aggregationPromise);
+
         return aggregationPromise;
     }
 
     /**
-     * Releases an entity. If its refCount drops to 0, it may be scheduled for eviction
-     * based on the configuration.
+     * Acquires multiple entity types from the cache.
      */
-    release(name: string, days?: string[]): void {
-        const cacheItem = this.getExistingCacheItem(name, days);
-        if (!cacheItem) {
-            this.logger.logError(`Attempted to release non-existent entity`, { name, days });
+    async acquireMultiple(names: string[], days?: string[]): Promise<T[]> {
+        const nestedArrays = await Promise.all(names.map(name => this.acquire(name, days)));
+        return nestedArrays.flat();
+    }
+
+    /**
+     * Acquires all entities available for the specified days.
+     * Requires data sources to implement `fetchAll()`.
+     */
+    async acquireAll(days?: string[]): Promise<T[]> {
+        this.logger.logAggregationStart(`ACQUIRE_ALL`, days);
+        const start = Date.now();
+
+        const nameToIdAndPartials = new Map<string, Map<string, Partial<T>[]>>();
+
+        for (const source of this.config.dataSources) {
+            if (source.fetchAll) {
+                try {
+                    const partials = await source.fetchAll(days);
+                    for (const partial of partials) {
+                        const entityName = partial.name;
+                        const entityId = partial.id;
+                        if (entityName && entityId) {
+                            if (!nameToIdAndPartials.has(entityName)) {
+                                nameToIdAndPartials.set(entityName, new Map<string, Partial<T>[]>());
+                            }
+                            const idMap = nameToIdAndPartials.get(entityName)!;
+                            if (!idMap.has(entityId)) idMap.set(entityId, []);
+                            idMap.get(entityId)!.push(partial);
+                        }
+                    }
+                } catch (err) {
+                    this.logger.logError(`fetchAll error from source`, err);
+                }
+            } else {
+                this.logger.logError(`A data source does not support fetchAll`, new Error('Method not implemented'));
+            }
+        }
+
+        const results: T[] = [];
+        for (const [name, idMap] of nameToIdAndPartials.entries()) {
+            for (const [id, chunks] of idMap.entries()) {
+                const completeEntity = deepMerge<T>(...chunks);
+                if (!completeEntity.name) completeEntity.name = name;
+                if (!completeEntity.id) completeEntity.id = id;
+                if (!completeEntity.version) completeEntity.version = 1;
+
+                if (days && days.length > 0) {
+                    (completeEntity as unknown as ITimeDependentEntity).days = days;
+                }
+
+                let cachedItem = this.getExistingCacheItem(name, id, days);
+                if (cachedItem) {
+                    this.mergeChanges(cachedItem.data, completeEntity);
+                } else {
+                    this.storeInCache(completeEntity, name, id, days);
+                    cachedItem = this.getExistingCacheItem(name, id, days)!;
+                }
+
+                cachedItem.refCount++;
+                this.cancelTtl(cachedItem, name, id, days);
+                results.push(cachedItem.data);
+            }
+
+            const aggregationKey = this.getAggregationKey(name, days);
+            this.fullyLoadedKeys.add(aggregationKey);
+        }
+
+        this.logger.logAggregationComplete(`ACQUIRE_ALL`, Date.now() - start, days);
+        return results;
+    }
+
+    /**
+     * Releases an entity type. If its refCount drops to 0, it may be scheduled for eviction.
+     */
+    release(entityName: string, days?: string[]): void {
+        const nameMap = this.getCacheNameMap(entityName, days);
+
+        if (!nameMap) {
+            this.logger.logError(CacheErrorMessage.RELEASE_NON_EXISTENT, { name: entityName, days });
             return;
         }
 
-        if (cacheItem.refCount > 0) {
-            cacheItem.refCount--;
-        }
+        const isTimeDependent = days && days.length > 0;
+        const isInsideRange = isTimeDependent && this.isInsideConfigRange(days);
 
-        if (cacheItem.refCount === 0) {
-            // Logic for whether it should be evicted
-            const isTimeDependent = days && days.length > 0;
-            const isInsideRange = isTimeDependent && this.isInsideConfigRange(days!);
+        for (const [id, cacheItem] of nameMap.entries()) {
+            if (cacheItem.refCount > 0) {
+                cacheItem.refCount--;
+            }
 
-            if (!isTimeDependent || !isInsideRange) {
-                // It is strictly on-demand logic. Start the TTL countdown.
-                this.startTtlCountdown(cacheItem, name, days);
+            if (cacheItem.refCount === 0) {
+                if (!isTimeDependent || !isInsideRange) {
+                    this.startTtlCountdown(cacheItem, entityName, id, days);
+                }
             }
         }
     }
 
     // ============== PRIVATE HELPERS ============== //
 
-    private getAggregationKey(name: string, days?: string[]): string {
-        return days ? `${name}#${days.join('#')}` : name;
+    private getAggregationKey(entityName: string, days?: string[]): string {
+        return days && days.length > 0 ? `${entityName}#${days.join('#')}` : entityName;
     }
 
-    private getExistingCacheItem(name: string, days?: string[]): CacheItem<T> | undefined {
+    private getCacheNameMap(entityName: string, days?: string[]): Map<string, CacheItem<T>> | undefined {
         if (!days || days.length === 0) {
-            return this.timeIndependentMap.get(name);
+            return this.timeIndependentMap.get(entityName);
         }
 
-        // For time-dependent, it must be present in ALL requested days to be considered a full hit.
-        // If it's missing from even one day, we don't return it and instead fetch the full array.
-        // Because the exact same object reference is shared, we can just grab it from the first day
-        // assuming it exists in all of them.
-        for (const day of days) {
-            const dayMap = this.timeDependentMap.get(day);
-            if (!dayMap || !dayMap.has(name)) {
-                return undefined;
-            }
-        }
-
-        // Return the reference from the first day
-        return this.timeDependentMap.get(days[0])!.get(name);
+        // Return mapping from the first day since it holds precise memory references to all others
+        const dayMap = this.timeDependentMap.get(days[0]);
+        return dayMap ? dayMap.get(entityName) : undefined;
     }
 
-    private storeInCache(data: T, name: string, days?: string[]): void {
+    private getExistingCacheItem(entityName: string, id: string, days?: string[]): CacheItem<T> | undefined {
+        const nameMap = this.getCacheNameMap(entityName, days);
+        return nameMap ? nameMap.get(id) : undefined;
+    }
+
+    private storeInCache(data: T, entityName: string, id: string, days?: string[]): void {
         const newItem: CacheItem<T> = {
             data,
-            refCount: 0, // Starts at 0, incremented by acquire() immediately after
+            refCount: 0,
             ttlTimeout: null
         };
 
         if (!days || days.length === 0) {
-            this.timeIndependentMap.set(name, newItem);
+            if (!this.timeIndependentMap.has(entityName)) {
+                this.timeIndependentMap.set(entityName, new Map<string, CacheItem<T>>());
+            }
+            this.timeIndependentMap.get(entityName)!.set(id, newItem);
         } else {
             for (const day of days) {
                 if (!this.timeDependentMap.has(day)) {
-                    this.timeDependentMap.set(day, new Map<string, CacheItem<T>>());
+                    this.timeDependentMap.set(day, new Map<string, Map<string, CacheItem<T>>>());
                 }
-                // Store the EXACT SAME reference across all day maps
-                this.timeDependentMap.get(day)!.set(name, newItem);
+                const dayMap = this.timeDependentMap.get(day)!;
+                if (!dayMap.has(entityName)) {
+                    dayMap.set(entityName, new Map<string, CacheItem<T>>());
+                }
+                dayMap.get(entityName)!.set(id, newItem);
             }
         }
     }
 
-    private startTtlCountdown(item: CacheItem<T>, name: string, days?: string[]): void {
-        if (item.ttlTimeout) return; // Already ticking
+    private cancelTtl(item: CacheItem<T>, entityName: string, id: string, days?: string[]) {
+        if (item.ttlTimeout) {
+            clearTimeout(item.ttlTimeout);
+            item.ttlTimeout = null;
+            this.logger.logTtlCancel(`${entityName}:${id}`, days);
+        }
+    }
 
-        this.logger.logTtlStart(name, this.config.ttlMs, days);
+    private startTtlCountdown(item: CacheItem<T>, entityName: string, id: string, days?: string[]): void {
+        if (item.ttlTimeout) return;
+
+        this.logger.logTtlStart(`${entityName}:${id}`, this.config.ttlMs, days);
 
         item.ttlTimeout = setTimeout(() => {
-            this.evict(name, days);
+            this.evict(entityName, id, days);
         }, this.config.ttlMs);
     }
 
-    private evict(name: string, days?: string[]): void {
+    private evict(name: string, id: string, days?: string[]): void {
         if (!days || days.length === 0) {
-            this.timeIndependentMap.delete(name);
+            const nameMap = this.timeIndependentMap.get(name);
+            if (nameMap) {
+                nameMap.delete(id);
+                if (nameMap.size === 0) this.timeIndependentMap.delete(name);
+            }
         } else {
             for (const day of days) {
                 const dayMap = this.timeDependentMap.get(day);
                 if (dayMap) {
-                    dayMap.delete(name);
-                    if (dayMap.size === 0) {
-                        this.timeDependentMap.delete(day);
+                    const nameMap = dayMap.get(name);
+                    if (nameMap) {
+                        nameMap.delete(id);
+                        if (nameMap.size === 0) dayMap.delete(name);
                     }
+                    if (dayMap.size === 0) this.timeDependentMap.delete(day);
                 }
             }
         }
-        this.logger.logEviction(name, days);
+
+        const aggregationKey = this.getAggregationKey(name, days);
+        this.fullyLoadedKeys.delete(aggregationKey);
+        this.logger.logEviction(`${name}:${id}`, days);
+    }
+
+    private getConfiguredTimeBounds(): { validStartMs: number, validEndMs: number, msPerDay: number } | null {
+        if (!this.config.timeRange) return null;
+
+        const now = new Date();
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        const dayOfWeek = new Date(startOfToday).getDay();
+        const msPerDay = 1000 * 60 * 60 * 24;
+
+        const startOfWeekMs = startOfToday - (dayOfWeek * msPerDay);
+        const endOfWeekMs = startOfWeekMs + (6 * msPerDay);
+
+        const { pastDays, futureDays } = this.config.timeRange;
+        const validStartMs = startOfWeekMs - (pastDays * msPerDay);
+        const validEndMs = endOfWeekMs + (futureDays * msPerDay);
+
+        return { validStartMs, validEndMs, msPerDay };
+    }
+
+    private getConfiguredDays(): string[] {
+        const bounds = this.getConfiguredTimeBounds();
+        if (!bounds) return [];
+        const { validStartMs, validEndMs, msPerDay } = bounds;
+
+        const days: string[] = [];
+        for (let t = validStartMs; t <= validEndMs; t += msPerDay) {
+            const date = new Date(t);
+            const yyyy = date.getFullYear();
+            const mm = String(date.getMonth() + 1).padStart(2, '0');
+            const dd = String(date.getDate()).padStart(2, '0');
+            days.push(`${yyyy}-${mm}-${dd}`);
+        }
+        return days;
     }
 
     private isInsideConfigRange(days: string[]): boolean {
-        if (!this.config.timeRange) return false;
+        const bounds = this.getConfiguredTimeBounds();
+        if (!bounds) return false;
 
-        const now = new Date();
-        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-        // Calculate the start of the current week (assuming Sunday as first day of week, day 0)
-        const currentDayOfWeek = startOfToday.getDay();
-        const startOfWeek = new Date(startOfToday);
-        startOfWeek.setDate(startOfToday.getDate() - currentDayOfWeek);
-
-        // Calculate the end of the current week (Saturday)
-        const endOfWeek = new Date(startOfWeek);
-        endOfWeek.setDate(startOfWeek.getDate() + 6);
-
-        // Expand boundaries using pastDays and futureDays
-        const retentionStart = new Date(startOfWeek);
-        retentionStart.setDate(startOfWeek.getDate() - this.config.timeRange.pastDays);
-
-        const retentionEnd = new Date(endOfWeek);
-        retentionEnd.setDate(endOfWeek.getDate() + this.config.timeRange.futureDays);
-
-        const msStart = retentionStart.getTime();
-        const msEnd = retentionEnd.getTime();
+        const { validStartMs, validEndMs } = bounds;
 
         for (const day of days) {
             const date = new Date(day);
             if (Number.isNaN(date.getTime())) return false;
 
             const time = date.getTime();
-            if (time < msStart || time > msEnd) {
-                return false;
-            }
+            if (time < validStartMs || time > validEndMs) return false;
         }
         return true;
     }
 
-    private startBackgroundTasks() {
-        if (this.config.pollingIntervalMs > 0) {
-            // Typescript complains about readonly reassignment, let's treat it safely with any or override readonly.
-            // Actually, we shouldn't use readonly if we want to assign it here. 
-            // My earlier chunk made it readonly to fix a warning, but we do assign it here.
-            // I'll ignore the readonly assignment error or cast.
-            (this as any).pollingIntervalId = setInterval(() => this.poll(), this.config.pollingIntervalMs);
+    private async preloadConfiguredDays() {
+        if (!this.config.timeRange) return;
+
+        const days = this.getConfiguredDays();
+        if (days.length === 0) return;
+
+        this.logger.logAggregationStart(`PRELOAD_CURRENT_WEEK`, days);
+        const start = Date.now();
+
+        const nameToIdAndPartials = new Map<string, Map<string, Partial<T>[]>>();
+
+        for (const source of this.config.dataSources) {
+            if (source.fetchAll) {
+                try {
+                    const partials = await source.fetchAll(days);
+                    for (const partial of partials) {
+                        const entityName = partial.name;
+                        const entityId = partial.id;
+                        if (entityName && entityId) {
+                            if (!nameToIdAndPartials.has(entityName)) {
+                                nameToIdAndPartials.set(entityName, new Map<string, Partial<T>[]>());
+                            }
+                            const idMap = nameToIdAndPartials.get(entityName)!;
+                            if (!idMap.has(entityId)) idMap.set(entityId, []);
+                            idMap.get(entityId)!.push(partial);
+                        }
+                    }
+                } catch (err) {
+                    this.logger.logError(`Preload fetchAll error from source`, err);
+                }
+            }
         }
 
-        // Run the rollover cycle daily (or every hour to be safe)
-        const hourMs = 1000 * 60 * 60;
-        (this as any).rolloverIntervalId = setInterval(() => this.rollover(), hourMs);
+        for (const [name, idMap] of nameToIdAndPartials.entries()) {
+            for (const [id, chunks] of idMap.entries()) {
+                const completeEntity = deepMerge<T>(...chunks);
+                if (!completeEntity.name) completeEntity.name = name;
+                if (!completeEntity.id) completeEntity.id = id;
+                if (!completeEntity.version) completeEntity.version = 1;
+
+                if (days && days.length > 0) {
+                    (completeEntity as unknown as ITimeDependentEntity).days = days;
+                }
+
+                const existing = this.getExistingCacheItem(name, id, days);
+                if (existing) {
+                    this.mergeChanges(existing.data, completeEntity);
+                } else {
+                    this.storeInCache(completeEntity, name, id, days);
+                }
+            }
+
+            const aggregationKey = this.getAggregationKey(name, days);
+            this.fullyLoadedKeys.add(aggregationKey);
+        }
+
+        this.logger.logAggregationComplete(`PRELOAD_CURRENT_WEEK`, Date.now() - start, days);
+    }
+
+    private startBackgroundTasks() {
+        if (this.config.pollingIntervalMs > 0) {
+            this.pollingIntervalId = setInterval(() => this.poll(), this.config.pollingIntervalMs);
+        }
+
+        const hourMs = 1000 * 60 * 60 * 24;
+        this.rolloverIntervalId = setInterval(() => this.rollover(), hourMs);
     }
 
     private async poll() {
-        // Iterate through all persistent Time-Dependent cache items
-        const visited = new Set<string>(); // to prevent polling the same exact item reference multiple times
+        const indepKeys = Array.from(this.timeIndependentMap.keys());
+        for (const name of indepKeys) {
+            const nameMap = this.timeIndependentMap.get(name)!;
+            const idsToUpdate: string[] = [];
+            for (const [id, item] of nameMap.entries()) {
+                if (!item.ttlTimeout) idsToUpdate.push(id);
+            }
+            if (idsToUpdate.length > 0) {
+                await this.executePollFetch(name, idsToUpdate);
+            }
+        }
 
         for (const [, dayMap] of this.timeDependentMap.entries()) {
-            for (const [name, cacheItem] of dayMap.entries()) {
-                if (visited.has(name)) continue;
-                visited.add(name);
+            for (const [name, nameMap] of dayMap.entries()) {
+                const idsToUpdate: string[] = [];
+                let entityDays: string[] | undefined;
 
-                // Only poll if it's currently held in memory due to Config Range
-                const entityDays = (cacheItem.data as unknown as ITimeDependentEntity).days;
-                if (!entityDays || !this.isInsideConfigRange(entityDays)) continue;
-
-                try {
-                    const latestData = await this.aggregateFromSources(name, entityDays);
-                    if (latestData.version > cacheItem.data.version) {
-                        this.mergeChanges(cacheItem.data, latestData);
-                        this.logger.logPollingUpdate(name, latestData.version, entityDays);
+                for (const [id, item] of nameMap.entries()) {
+                    if (!item.ttlTimeout) {
+                        idsToUpdate.push(id);
+                        entityDays ??= (item.data as unknown as ITimeDependentEntity).days;
                     }
-                } catch (err) {
-                    this.logger.logError(`Polling error for ${name}`, err);
+                }
+
+                if (idsToUpdate.length > 0) {
+                    await this.executePollFetch(name, idsToUpdate, entityDays);
                 }
             }
         }
     }
 
+    private async executePollFetch(name: string, ids: string[], days?: string[]) {
+        let fetchedPartials: Partial<T>[] = [];
+        try {
+            for (const source of this.config.dataSources) {
+                if (source.fetchByIds) {
+                    const partials = await source.fetchByIds(name, ids, days);
+                    fetchedPartials.push(...partials);
+                } else {
+                    const partials = await source.fetch(name, days);
+                    const filtered = partials.filter(p => p.id && ids.includes(p.id));
+                    fetchedPartials.push(...filtered);
+                }
+            }
+        } catch (err) {
+            this.logger.logError(`${CacheErrorMessage.POLLING_ERROR} ${name}`, err);
+            return;
+        }
+
+        const entityMap = new Map<string, Partial<T>[]>();
+        for (const p of fetchedPartials) {
+            if (p.id) {
+                if (!entityMap.has(p.id)) entityMap.set(p.id, []);
+                entityMap.get(p.id)!.push(p);
+            }
+        }
+
+        for (const [id, chunks] of entityMap.entries()) {
+            const completeEntity = deepMerge<T>(...chunks);
+            const cacheItem = this.getExistingCacheItem(name, id, days);
+
+            if (cacheItem && completeEntity.version !== undefined && completeEntity.version > cacheItem.data.version) {
+                this.mergeChanges(cacheItem.data, completeEntity as T);
+                this.logger.logPollingUpdate(`${name}:${id}`, completeEntity.version, days);
+                this.onEntityUpdated.next(cacheItem.data);
+            }
+        }
+    }
+
     private rollover() {
-        const visited = new Set<string>();
+        const visitedNames = new Set<string>();
+
         for (const [, dayMap] of this.timeDependentMap.entries()) {
-            for (const [name, cacheItem] of dayMap.entries()) {
-                if (visited.has(name)) continue;
-                visited.add(name);
+            for (const [name, nameMap] of dayMap.entries()) {
+                if (visitedNames.has(name)) continue;
+                visitedNames.add(name);
 
-                const entityDays = (cacheItem.data as unknown as ITimeDependentEntity).days;
-                if (!entityDays) continue;
+                for (const [id, cacheItem] of nameMap.entries()) {
+                    const entityDays = (cacheItem.data as unknown as ITimeDependentEntity).days;
+                    if (!entityDays) continue;
 
-                if (!this.isInsideConfigRange(entityDays)) {
-                    // It has fallen out of the persistence window.
-                    // If nobody is using it, start the evictionTTL countdown immediately.
-                    if (cacheItem.refCount === 0) {
-                        this.startTtlCountdown(cacheItem, name, entityDays);
+                    if (!this.isInsideConfigRange(entityDays)) {
+                        if (cacheItem.refCount === 0) {
+                            this.startTtlCountdown(cacheItem, name, id, entityDays);
+                        }
                     }
                 }
             }
@@ -299,27 +528,120 @@ export class CacheManager<T extends IEntity> implements OnModuleInit, OnModuleDe
 
     // ============== AGGREGATION & POLLING ============== //
 
-    private async aggregateFromSources(name: string, days?: string[]): Promise<T> {
-        this.logger.logAggregationStart(name, days);
+    private async aggregateFromSources(entityName: string, days?: string[]): Promise<T[]> {
         const start = Date.now();
+        const entityMap = new Map<string, Partial<T>[]>();
 
-        const promises = this.config.dataSources.map(source => source.fetch(name, days));
-        const results = await Promise.all(promises);
+        for (const source of this.config.dataSources) {
+            try {
+                const partials = await source.fetch(entityName, days);
 
-        const completeEntity = deepMerge<T>(...results);
-
-        if (!completeEntity.name) completeEntity.name = name;
-        if (!completeEntity.version) completeEntity.version = 1;
-
-        if (days && days.length > 0) {
-            (completeEntity as unknown as ITimeDependentEntity).days = days;
+                for (const partial of partials) {
+                    if (partial?.id) {
+                        if (!entityMap.has(partial.id)) {
+                            entityMap.set(partial.id, []);
+                        }
+                        entityMap.get(partial.id)!.push(partial);
+                    }
+                }
+            } catch (err) {
+                this.logger.logError(`Aggregation fetch error for ${entityName}`, err);
+            }
         }
 
-        this.logger.logAggregationComplete(name, Date.now() - start, days);
-        return completeEntity;
+        const completeEntities: T[] = [];
+        const entityIds: string[] = [];
+
+        for (const [id, partialChunks] of entityMap.entries()) {
+            const completeEntity = deepMerge<T>(...partialChunks);
+            if (!completeEntity.name) completeEntity.name = entityName;
+            if (!completeEntity.id) completeEntity.id = id;
+            if (!completeEntity.version) completeEntity.version = 1;
+
+            if (days && days.length > 0) {
+                (completeEntity as unknown as ITimeDependentEntity).days = days;
+            }
+
+            const existing = this.getExistingCacheItem(entityName, id, days);
+            if (existing) {
+                this.mergeChanges(existing.data, completeEntity as T);
+                completeEntities.push(existing.data);
+            } else {
+                this.storeInCache(completeEntity as T, entityName, id, days);
+                completeEntities.push(this.getExistingCacheItem(entityName, id, days)!.data);
+            }
+            entityIds.push(id);
+        }
+
+        this.logger.logAggregationComplete(entityName, Date.now() - start, days);
+
+        if (this.config.relations && this.config.relations[entityName] && entityIds.length > 0) {
+            const relatedNames = this.config.relations[entityName];
+
+            this.fetchAndStoreAssociatedEntities(relatedNames, entityIds, days).catch(err => {
+                this.logger.logError('Associated Entities Fetch Error', err);
+            });
+        }
+
+        return completeEntities;
     }
 
-    public mergeChanges(oldData: T, newVersionData: T): void {
-        mergeChanges(oldData, newVersionData);
+    private async fetchAndStoreAssociatedEntities(relatedNames: string[], ids: string[], days?: string[]): Promise<void> {
+        for (const relatedName of relatedNames) {
+            const entityMap = new Map<string, Partial<T>[]>();
+
+            for (const source of this.config.dataSources) {
+                if (source.fetchByIds) {
+                    try {
+                        const partials = await source.fetchByIds(relatedName, ids, days);
+                        for (const partial of partials) {
+                            if (partial && partial.id) {
+                                if (!entityMap.has(partial.id)) entityMap.set(partial.id, []);
+                                entityMap.get(partial.id)!.push(partial);
+                            }
+                        }
+                    } catch (err) {
+                        this.logger.logError(`Assoc Fetch error for ${relatedName}`, err);
+                    }
+                } else {
+                    try {
+                        const partials = await source.fetch(relatedName, days);
+                        for (const partial of partials) {
+                            if (partial && partial.id && ids.includes(partial.id)) {
+                                if (!entityMap.has(partial.id)) entityMap.set(partial.id, []);
+                                entityMap.get(partial.id)!.push(partial);
+                            }
+                        }
+                    } catch (err) {
+                        this.logger.logError(`Assoc Fetch fallback error for ${relatedName}`, err);
+                    }
+                }
+            }
+
+            for (const [id, partialChunks] of entityMap.entries()) {
+                const completeEntity = deepMerge<T>(...partialChunks);
+                if (!completeEntity.name) completeEntity.name = relatedName;
+                if (!completeEntity.id) completeEntity.id = id;
+                if (!completeEntity.version) completeEntity.version = 1;
+
+                if (days && days.length > 0) {
+                    (completeEntity as unknown as ITimeDependentEntity).days = days;
+                }
+
+                const existing = this.getExistingCacheItem(relatedName, id, days);
+                if (existing) {
+                    this.mergeChanges(existing.data, completeEntity as T);
+                } else {
+                    this.storeInCache(completeEntity as T, relatedName, id, days);
+                }
+            }
+
+            const aggregationKey = this.getAggregationKey(relatedName, days);
+            this.fullyLoadedKeys.add(aggregationKey);
+        }
+    }
+
+    private mergeChanges(target: T, source: T): void {
+        mergeChanges(target, source);
     }
 }

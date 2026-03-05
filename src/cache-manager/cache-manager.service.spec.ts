@@ -25,12 +25,12 @@ describe('CacheManager', () => {
 
     beforeEach(async () => {
         sourceA = new MockDataSource<TestEntity>({
-            'entity1': { fieldA: 'ValueA', version: 1 }
-        }, 10);
+            'entity1': [{ id: '1', name: 'entity1', fieldA: 'ValueA', version: 1 }]
+        }, 0);
 
         sourceB = new MockDataSource<TestEntity>({
-            'entity1': { fieldB: 42, version: 1 }
-        }, 10);
+            'entity1': [{ id: '1', name: 'entity1', fieldB: 42, version: 1 }]
+        }, 0);
 
         mockConfig.dataSources = [sourceA, sourceB];
         logger = new DefaultCacheLogger();
@@ -54,16 +54,16 @@ describe('CacheManager', () => {
 
     describe('Aggregation Logic', () => {
         it('should aggregate fields from multiple sources concurrently', async () => {
-            // Both sources take 10ms, but run concurrently, so it should resolve relatively fast
             const promise = cacheManager.acquire('entity1');
-            jest.advanceTimersByTime(20);
-            const result = await promise;
+            const results = await promise;
 
-            expect(result).toBeDefined();
-            expect(result.name).toBe('entity1');
-            expect(result.version).toBe(1);
-            expect(result.fieldA).toBe('ValueA');
-            expect(result.fieldB).toBe(42);
+            expect(results).toBeDefined();
+            expect(results.length).toBe(1);
+            expect(results[0].name).toBe('entity1');
+            expect(results[0].id).toBe('1');
+            expect(results[0].version).toBe(1);
+            expect(results[0].fieldA).toBe('ValueA');
+            expect(results[0].fieldB).toBe(42);
         });
     });
 
@@ -71,33 +71,32 @@ describe('CacheManager', () => {
         it('should increment refCount on acquire and delete after TTL when refCount is 0', async () => {
             // Ignore background aggregation promises in this test structure by mocking timers
             const acquirePromise = cacheManager.acquire('entity1');
-            jest.advanceTimersByTime(20); // allow the 10ms network delay to finish
-            const entity = await acquirePromise;
+            const entities = await acquirePromise;
 
             // Access private map to check state
-            const map = (cacheManager as any).timeIndependentMap;
-            const cacheItem = map.get('entity1');
+            const indepMap = (cacheManager as any).timeIndependentMap;
+            const nameMap = indepMap.get('entity1');
+            const cacheItem = nameMap ? nameMap.get('1') : undefined;
 
             expect(cacheItem).toBeDefined();
-            expect(cacheItem.refCount).toBe(1);
+            expect(cacheItem!.refCount).toBe(1);
 
             // Release it
             cacheManager.release('entity1');
-            expect(cacheItem.refCount).toBe(0);
+            expect(cacheItem!.refCount).toBe(0);
 
             // It should NOT be deleted immediately
-            expect(map.has('entity1')).toBe(true);
+            expect(indepMap.has('entity1')).toBe(true);
 
             // Fast forward past TTL (50ms)
             jest.advanceTimersByTime(60);
 
             // It SHOULD be deleted now
-            expect(map.has('entity1')).toBe(false);
+            expect(indepMap.has('entity1')).toBe(false);
         });
 
         it('should cancel TTL if re-acquired before timeout', async () => {
             const p1 = cacheManager.acquire('entity1');
-            jest.advanceTimersByTime(20);
             await p1;
 
             cacheManager.release('entity1');
@@ -107,16 +106,15 @@ describe('CacheManager', () => {
 
             // Re-acquire before TTL expires
             const p2 = cacheManager.acquire('entity1');
-            jest.advanceTimersByTime(10);
             await p2;
 
             // Fast forward past the original TTL
             jest.advanceTimersByTime(40);
 
             // It should still exist because TTL was cancelled!
-            const map = (cacheManager as any).timeIndependentMap;
-            expect(map.has('entity1')).toBe(true);
-            expect(map.get('entity1').refCount).toBe(1);
+            const indepMap = (cacheManager as any).timeIndependentMap;
+            expect(indepMap.has('entity1')).toBe(true);
+            expect(indepMap.get('entity1').get('1').refCount).toBe(1);
         });
     });
 
@@ -125,10 +123,9 @@ describe('CacheManager', () => {
             const days = ['2023-01-01', '2023-01-02'];
 
             const p1 = cacheManager.acquire('entity1', days);
-            jest.advanceTimersByTime(20);
-            const entity = await p1;
+            const entities = await p1;
 
-            expect(entity.days).toEqual(days);
+            expect(entities[0].days).toEqual(days);
 
             const map = (cacheManager as any).timeDependentMap;
             const day1Map = map.get(days[0]);
@@ -137,8 +134,8 @@ describe('CacheManager', () => {
             expect(day1Map).toBeDefined();
             expect(day2Map).toBeDefined();
 
-            const item1 = day1Map.get('entity1');
-            const item2 = day2Map.get('entity1');
+            const item1 = day1Map.get('entity1').get('1');
+            const item2 = day2Map.get('entity1').get('1');
 
             // They should point to the exact same object reference
             expect(item1 === item2).toBe(true);

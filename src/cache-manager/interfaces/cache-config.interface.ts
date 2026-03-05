@@ -18,6 +18,9 @@ export interface CacheConfig<T extends IEntity> {
     /** Configuration for the persistence time window for Time-Dependent entities. */
     timeRange?: TimeRangeConfig;
 
+    /** Relation map for auto-fetching associated entities (e.g. { "User": ["UserStats"] }) */
+    relations?: Record<string, string[]>;
+
     /** The primary and enrichment data sources to query for slices of the entity. */
     dataSources: IDataSource<T>[];
 }

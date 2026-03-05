@@ -3,8 +3,8 @@
         "ttlMs": 60000,
         "pollingIntervalMs": 300000,
         "timeRange": {
-            "pastDays": 7,
-            "futureDays": 1
+            "pastDays": 3,
+            "futureDays": 3
         }
     }
 }

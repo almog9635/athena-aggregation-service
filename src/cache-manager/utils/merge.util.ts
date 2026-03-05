@@ -37,17 +37,39 @@ export function deepMerge<T>(...objects: Partial<T>[]): T {
  * when a new version is fetched.
  */
 export function mergeChanges<T>(target: T, source: T): void {
+    if (!target || !source) return;
+
     for (const key of Object.keys(source as object) as Array<keyof T>) {
         const sVal = source[key];
         const tVal = target[key];
 
-        // If identical, do nothing
+        // If explicitly identical by reference or primitive value, do nothing
         if (sVal === tVal) continue;
 
         if (Array.isArray(sVal)) {
-            // Overwrite array
-            target[key] = sVal;
+            // Only overwrite if it's literally a different array (length mismatch, or item mismatch)
+            let isDifferent = false;
+
+            if (!Array.isArray(tVal) || sVal.length !== tVal.length) {
+                isDifferent = true;
+            } else {
+                for (let i = 0; i < sVal.length; i++) {
+                    // For arrays, we just do a shallow check against each item.
+                    // If you have deeply nested arrays of objects, you might want to recurse here too, 
+                    // but usually replacing the array is safer if *any* sub-item changed.
+                    if (sVal[i] !== tVal[i]) {
+                        isDifferent = true;
+                        break;
+                    }
+                }
+            }
+
+            if (isDifferent) {
+                target[key] = sVal;
+            }
+
         } else if (sVal && typeof sVal === 'object' && !(sVal instanceof Date)) {
+            // Recursively merge objects
             if (tVal && typeof tVal === 'object' && !(tVal instanceof Date) && !Array.isArray(tVal)) {
                 mergeChanges(tVal as any, sVal as any);
             } else {
