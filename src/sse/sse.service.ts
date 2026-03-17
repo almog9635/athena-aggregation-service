@@ -4,9 +4,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { ConfigService } from '@nestjs/config';
 import { SessionRegistryService } from './session-registry.service';
 import { DiffEntityResult } from './types/diff';
-import { EmptyDiffService } from './providers/empty-diff.service';
+import { CacheDiffService } from './providers/cache-diff.service';
 import { Session } from './types/session';
 import { EventsQueryDto } from './dto/events-query.dto';
+import { CacheManager } from '../cache-manager/cache-manager.service';
+import { DataGroupConfig } from '../cache-manager/interfaces/cache-config.interface';
 
 type SseResponse = Response & { flushHeaders?: () => void };
 
@@ -31,7 +33,8 @@ export class SseService implements OnModuleDestroy {
   constructor(
     private readonly config: ConfigService,
     private readonly registry: SessionRegistryService,
-    private readonly diffService: EmptyDiffService,
+    private readonly diffService: CacheDiffService,
+    private readonly cacheManager: CacheManager<any>,
   ) {
     this.maxPayloadBytes =
       this.config.get<number>('SSE_MAX_PAYLOAD_MB', 10) * 1024 * 1024;
@@ -173,7 +176,7 @@ export class SseService implements OnModuleDestroy {
     );
 
     // initial sync
-    const diff = this.diffService.getDiff(
+    const diff = await this.diffService.getDiff(
       session.squadronIds,
       session.startDate,
       session.endDate,
@@ -245,6 +248,21 @@ export class SseService implements OnModuleDestroy {
     this.registry.remove(session);
     session.response = null;
     this.logger.log(`session ${session.sessionId} removed`);
+
+    // Only release the cache subscriptions specifically for this session's squadron filters
+    const mappings = this.config.get<Record<string, DataGroupConfig[]>>('cache.dataGroupMapping');
+    if (mappings && session.dataGroup && mappings[session.dataGroup]) {
+        const days = this.diffService.getDaysArray(session.startDate, session.endDate);
+        const subscriberFilters = { squadronIds: session.squadronIds };
+        for (const config of mappings[session.dataGroup]) {
+            this.cacheManager.release(
+                config.entityName, 
+                days, 
+                session.dataGroup, 
+                subscriberFilters
+            );
+        }
+    }
   }
 
   /** remove sessions that have lived longer than TTL */

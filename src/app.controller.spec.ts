@@ -15,8 +15,8 @@ describe('AppController', () => {
   });
 
   describe('root', () => {
-    it('should return "Hello World!"', () => {
-      expect(appController.getHello()).toBe('Hello World!');
+    it('should return app status message', () => {
+      expect(appController.getHello()).toBe('Athena Aggregation Service API is running! Frontend is at localhost:4200');
     });
   });
 });

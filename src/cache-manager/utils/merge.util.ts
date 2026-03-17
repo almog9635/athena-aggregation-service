@@ -1,5 +1,5 @@
 /**
- * Deeply merges multiple partial objects into a single object.
+ * Deeply merges multiple entity fragments (partial objects) into a single object.
  * Arrays and primitives are overwritten by the rightmost object.
  * Objects are merged recursively.
  */
@@ -35,8 +35,10 @@ export function deepMerge<T>(...objects: Partial<T>[]): T {
  * Mutates `target` to update only the fields that are different in `source`.
  * Useful for preserving memory references of nested objects inside the cache
  * when a new version is fetched.
+ * 
+ * @param onIdRemoved A callback triggered when a relational pointer (object with __typename and id) is removed from an array.
  */
-export function mergeChanges<T>(target: T, source: T): void {
+export function mergeChanges<T>(target: T, source: T, onIdRemoved?: (typename: string, id: string) => void): void {
     if (!target || !source) return;
 
     for (const key of Object.keys(source as object) as Array<keyof T>) {
@@ -65,13 +67,24 @@ export function mergeChanges<T>(target: T, source: T): void {
             }
 
             if (isDifferent) {
+                // If onIdRemoved is provided, find any objects with {__typename, id} in tVal that are missing from sVal
+                if (onIdRemoved && Array.isArray(tVal)) {
+                    for (const oldItem of tVal) {
+                        if (oldItem && typeof oldItem === 'object' && oldItem.__typename && oldItem.id) {
+                            const stillExists = sVal.find(newItem => newItem && newItem.id === oldItem.id);
+                            if (!stillExists) {
+                                onIdRemoved(oldItem.__typename as string, oldItem.id as string);
+                            }
+                        }
+                    }
+                }
                 target[key] = sVal;
             }
 
         } else if (sVal && typeof sVal === 'object' && !(sVal instanceof Date)) {
             // Recursively merge objects
             if (tVal && typeof tVal === 'object' && !(tVal instanceof Date) && !Array.isArray(tVal)) {
-                mergeChanges(tVal as any, sVal as any);
+                mergeChanges(tVal as any, sVal as any, onIdRemoved);
             } else {
                 target[key] = sVal;
             }

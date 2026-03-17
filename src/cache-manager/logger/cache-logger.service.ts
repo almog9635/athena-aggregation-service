@@ -9,6 +9,7 @@ export interface ICacheLogger {
     logAggregationStart(name: string, days?: string[]): void;
     logAggregationComplete(name: string, timeTakenMs: number, days?: string[]): void;
     logPollingUpdate(name: string, newVersion: number, days?: string[]): void;
+    logRelationDisposal(name: string, id: string): void;
     logError(message: string, error: any): void;
 }
 
@@ -50,6 +51,10 @@ export class DefaultCacheLogger implements ICacheLogger {
 
     logPollingUpdate(name: string, newVersion: number, days?: string[]): void {
         this.logger.log(`[UPDATE] ${this.formatId(name, days)} polled new version: ${newVersion}. Modified fields merged.`);
+    }
+
+    logRelationDisposal(name: string, id: string): void {
+        this.logger.log(`[RELATION DISPOSAL] Removing orphaned ${name}:${id} from active tracking.`);
     }
 
     logError(message: string, error: any): void {

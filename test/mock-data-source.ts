@@ -3,7 +3,7 @@ import { IEntity } from '../src/cache-manager/interfaces/entity.interface';
 
 /**
  * A mock data source used for testing the CacheManager.
- * It simulates a GraphQL endpoint by returning configurable partial entities,
+ * It simulates a GraphQL endpoint by returning configurable entity fragments,
  * and allows for simulated network delays to test concurrency.
  */
 export class MockDataSource<T extends IEntity> implements IDataSource<T> {
@@ -23,7 +23,7 @@ export class MockDataSource<T extends IEntity> implements IDataSource<T> {
         this.delayMs = ms;
     }
 
-    async fetch(name: string, days?: string[]): Promise<Partial<T>[]> {
+    async fetch(name: string, days?: string[], requestedFields?: string[], subscriberFilters?: Record<string, any>): Promise<Partial<T>[]> {
         if (this.delayMs > 0) {
             await new Promise((resolve) => setTimeout(resolve, this.delayMs));
         }
@@ -36,8 +36,8 @@ export class MockDataSource<T extends IEntity> implements IDataSource<T> {
         return dataArr.map(d => ({ ...d }));
     }
 
-    async fetchByIds(name: string, ids: string[], days?: string[]): Promise<Partial<T>[]> {
-        const dataArr = await this.fetch(name, days);
+    async fetchByIds(name: string, ids: string[], days?: string[], requestedFields?: string[], subscriberFilters?: Record<string, any>): Promise<Partial<T>[]> {
+        const dataArr = await this.fetch(name, days, requestedFields, subscriberFilters);
         return dataArr.filter(d => d.id && ids.includes(d.id));
     }
 }

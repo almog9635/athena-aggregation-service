@@ -1,6 +1,18 @@
 cache:
-  ttlMs: 300000 # 5 minutes for prod
-  pollingIntervalMs: 600000 # 10 minutes for prod
-  timeRange:
+  ttlMs: 300000 
+  baseTickMs: 5000 
+  pollingIntervalMs: 600000 
+  discoveryIntervalMs: 600000 
+  entitySettings:
+    User:
+      pollingIntervalMs: 300000 
+      discoveryIntervalMs: 300000 
+    Mission:
+      pollingIntervalMs: 1200000 
+      discoveryIntervalMs: 1200000 
+  pollingTimeRange:
     pastDays: 3
     futureDays: 3
+  onDemandTimeRange:
+    pastDays: 14
+    futureDays: 30

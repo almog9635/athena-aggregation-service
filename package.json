@@ -20,9 +20,15 @@
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
+    "@apollo/server": "^5.4.0",
+    "@graphql-tools/executor-http": "^3.1.0",
+    "@graphql-tools/stitch": "^10.1.12",
+    "@graphql-tools/wrap": "^11.1.8",
+    "@nestjs/apollo": "^13.2.4",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.3",
     "@nestjs/core": "^11.0.1",
+    "@nestjs/graphql": "^13.2.4",
     "@nestjs/platform-express": "^11.0.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.0",

@@ -12,9 +12,9 @@ export class CacheManagerModule {
     /**
      * Registers the CacheManager with specific data sources statically configured.
      * Primitive settings (TTL, polling, range) are read from config.json / config.yaml.
-     * If no dataSources are provided, defaults to the auto-routing GraphQLDataSource.
+     * If no dataSource is provided, defaults to the auto-routing GraphQLDataSource.
      */
-    static register<T extends IEntity>(options?: { dataSources?: IDataSource<T>[] }): DynamicModule {
+    static register<T extends IEntity>(options?: { dataSource?: IDataSource<T> }): DynamicModule {
         return {
             module: CacheManagerModule,
             imports: [ConfigModule, GraphQLStitchingModule],
@@ -25,13 +25,17 @@ export class CacheManagerModule {
                     useFactory: (configService: ConfigService, gqlDataSource: GraphQLDataSource<T>): CacheConfig<T> => {
                         const ttlMs = configService.get<number>('cache.ttlMs', 60000);
                         const pollingIntervalMs = configService.get<number>('cache.pollingIntervalMs', 300000);
-                        const timeRange = configService.get<TimeRangeConfig>('cache.timeRange');
+                        const pollingTimeRange = configService.get<TimeRangeConfig>('cache.pollingTimeRange');
+                        const onDemandTimeRange = configService.get<TimeRangeConfig>('cache.onDemandTimeRange');
+                        const entitySettings = configService.get<Record<string, { pollingIntervalMs?: number }>>('cache.entitySettings');
 
                         return {
                             ttlMs,
                             pollingIntervalMs,
-                            timeRange,
-                            dataSources: options?.dataSources?.length ? options.dataSources : [gqlDataSource],
+                            entitySettings,
+                            pollingTimeRange,
+                            onDemandTimeRange,
+                            dataSource: options?.dataSource || gqlDataSource,
                         };
                     },
                     inject: [ConfigService, GraphQLDataSource],

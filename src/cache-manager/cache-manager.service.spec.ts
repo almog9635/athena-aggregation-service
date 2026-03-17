@@ -8,6 +8,7 @@ import { MockDataSource } from '../../test/mock-data-source';
 interface TestEntity extends ITimeDependentEntity {
     fieldA?: string;
     fieldB?: number;
+    squadronId?: string;
 }
 
 describe('CacheManager', () => {
@@ -19,20 +20,18 @@ describe('CacheManager', () => {
     const mockConfig: CacheConfig<TestEntity> = {
         ttlMs: 50,
         pollingIntervalMs: 0,
-        timeRange: { pastDays: 7, futureDays: 7 },
-        dataSources: [],
+        pollingTimeRange: { pastDays: 7, futureDays: 7 },
+        onDemandTimeRange: { pastDays: 30, futureDays: 30 },
+        entitySettings: {},
+        dataSource: {} as any, // Injected down below in beforeEach
     };
 
     beforeEach(async () => {
-        sourceA = new MockDataSource<TestEntity>({
-            'entity1': [{ id: '1', name: 'entity1', fieldA: 'ValueA', version: 1 }]
+        const stitchedSource = new MockDataSource<TestEntity>({
+            'entity1': [{ id: '1', name: 'entity1', fieldA: 'ValueA', fieldB: 42, version: 1, squadronId: '1' }]
         }, 0);
 
-        sourceB = new MockDataSource<TestEntity>({
-            'entity1': [{ id: '1', name: 'entity1', fieldB: 42, version: 1 }]
-        }, 0);
-
-        mockConfig.dataSources = [sourceA, sourceB];
+        mockConfig.dataSource = stitchedSource;
         logger = new DefaultCacheLogger();
 
         const module: TestingModule = await Test.createTestingModule({
@@ -53,8 +52,8 @@ describe('CacheManager', () => {
     });
 
     describe('Aggregation Logic', () => {
-        it('should aggregate fields from multiple sources concurrently', async () => {
-            const promise = cacheManager.acquire('entity1');
+        it('should execute fetch from the unified source', async () => {
+            const promise = cacheManager.acquire('entity1', undefined, 'testGroup');
             const results = await promise;
 
             expect(results).toBeDefined();
@@ -68,9 +67,9 @@ describe('CacheManager', () => {
     });
 
     describe('TTL and Ref Counting', () => {
-        it('should increment refCount on acquire and delete after TTL when refCount is 0', async () => {
+        it('should set activeGroups on acquire and delete after TTL when size is 0', async () => {
             // Ignore background aggregation promises in this test structure by mocking timers
-            const acquirePromise = cacheManager.acquire('entity1');
+            const acquirePromise = cacheManager.acquire('entity1', undefined, 'testGroup');
             const entities = await acquirePromise;
 
             // Access private map to check state
@@ -79,11 +78,12 @@ describe('CacheManager', () => {
             const cacheItem = nameMap ? nameMap.get('1') : undefined;
 
             expect(cacheItem).toBeDefined();
-            expect(cacheItem!.refCount).toBe(1);
+            expect(cacheItem!.activeGroups.has('testGroup')).toBe(true);
 
             // Release it
-            cacheManager.release('entity1');
-            expect(cacheItem!.refCount).toBe(0);
+            cacheManager.release('entity1', undefined, 'testGroup');
+            expect(cacheItem!.activeGroups.has('testGroup')).toBe(false);
+            expect(cacheItem!.activeGroups.size).toBe(0);
 
             // It should NOT be deleted immediately
             expect(indepMap.has('entity1')).toBe(true);
@@ -96,16 +96,16 @@ describe('CacheManager', () => {
         });
 
         it('should cancel TTL if re-acquired before timeout', async () => {
-            const p1 = cacheManager.acquire('entity1');
+            const p1 = cacheManager.acquire('entity1', undefined, 'testGroup');
             await p1;
 
-            cacheManager.release('entity1');
+            cacheManager.release('entity1', undefined, 'testGroup');
 
             // Fast forward a little bit, but less than TTL
             jest.advanceTimersByTime(20);
 
             // Re-acquire before TTL expires
-            const p2 = cacheManager.acquire('entity1');
+            const p2 = cacheManager.acquire('entity1', undefined, 'testGroup');
             await p2;
 
             // Fast forward past the original TTL
@@ -114,7 +114,7 @@ describe('CacheManager', () => {
             // It should still exist because TTL was cancelled!
             const indepMap = (cacheManager as any).timeIndependentMap;
             expect(indepMap.has('entity1')).toBe(true);
-            expect(indepMap.get('entity1').get('1').refCount).toBe(1);
+            expect(indepMap.get('entity1').get('1').activeGroups.size).toBe(1);
         });
     });
 
@@ -122,7 +122,7 @@ describe('CacheManager', () => {
         it('should store multi-day entities under exact same reference without duplication', async () => {
             const days = ['2023-01-01', '2023-01-02'];
 
-            const p1 = cacheManager.acquire('entity1', days);
+            const p1 = cacheManager.acquire('entity1', days, 'testGroup');
             const entities = await p1;
 
             expect(entities[0].days).toEqual(days);
@@ -139,7 +139,44 @@ describe('CacheManager', () => {
 
             // They should point to the exact same object reference
             expect(item1 === item2).toBe(true);
-            expect(item1.refCount).toBe(1);
+            expect(item1.activeGroups.size).toBe(1);
+        });
+    });
+
+    describe('Multi-Tenancy and Isolation', () => {
+        it('should create different aggregation keys for different subscriberFilters', async () => {
+            const days = ['2023-01-01'];
+            
+            // Acquire for Squadron 1
+            await cacheManager.acquire('entity1', days, 'group1', ['fieldA'], { squadronId: ['1'] });
+            
+            // Acquire for Squadron 2
+            await cacheManager.acquire('entity1', days, 'group1', ['fieldA'], { squadronId: ['2'] });
+            
+            expect((cacheManager as any).fullyLoadedKeys.size).toBe(2);
+            
+            const keys = Array.from((cacheManager as any).fullyLoadedKeys);
+            expect(keys[0]).not.toEqual(keys[1]);
+        });
+
+        it('should correctly release based on subscriberFilters', async () => {
+            const days = ['2023-01-01'];
+            const filters = { squadronId: ['1'] };
+            
+            await cacheManager.acquire('entity1', days, 'group1', ['fieldA'], filters);
+            
+            const indepMap = (cacheManager as any).timeDependentMap;
+            const item = indepMap.get('2023-01-01').get('entity1').get('1');
+            
+            expect(item.activeGroups.has('group1')).toBe(true);
+            
+            // Release with WRONG filters should not clear it (using memory filter logic in release)
+            cacheManager.release('entity1', days, 'group1', { squadronId: ['999'] });
+            expect(item.activeGroups.has('group1')).toBe(true);
+            
+            // Release with CORRECT filters should clear it
+            cacheManager.release('entity1', days, 'group1', filters);
+            expect(item.activeGroups.has('group1')).toBe(false);
         });
     });
 });

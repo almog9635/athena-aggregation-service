@@ -12,5 +12,5 @@ export abstract class DiffService {
     endDate: string,
     entityVersions?: Record<string, Record<string, number>>,
     dataGroup?: string,
-  ): DiffEntityResult[];
+  ): Promise<DiffEntityResult[]>;
 }

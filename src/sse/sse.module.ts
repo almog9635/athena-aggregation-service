@@ -3,12 +3,12 @@ import { ConfigModule } from '@nestjs/config';
 import { SseController } from './sse.controller';
 import { SseService } from './sse.service';
 import { SessionRegistryService } from './session-registry.service';
-import { EmptyDiffService } from './providers/empty-diff.service';
+import { CacheDiffService } from './providers/cache-diff.service';
 
 @Module({
   imports: [ConfigModule],
   controllers: [SseController],
-  providers: [SseService, SessionRegistryService, EmptyDiffService],
+  providers: [SseService, SessionRegistryService, CacheDiffService],
   exports: [SseService],
 })
 export class SseModule {
