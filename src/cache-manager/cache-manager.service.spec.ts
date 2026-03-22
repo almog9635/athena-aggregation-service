@@ -4,6 +4,10 @@ import { CacheConfig } from './interfaces/cache-config.interface';
 import { ITimeDependentEntity } from './interfaces/entity.interface';
 import { DefaultCacheLogger } from './logger/cache-logger.service';
 import { MockDataSource } from '../../test/mock-data-source';
+import { CacheStore } from './store/cache-store';
+import { CacheGroupManager } from './services/cache-group.service';
+import { CachePollingService } from './services/cache-polling.service';
+import { CacheLoaderService } from './services/cache-loader.service';
 
 interface TestEntity extends ITimeDependentEntity {
     fieldA?: string;
@@ -37,6 +41,10 @@ describe('CacheManager', () => {
         const module: TestingModule = await Test.createTestingModule({
             providers: [
                 CacheManager,
+                CacheStore,
+                CacheGroupManager,
+                CacheLoaderService,
+                CachePollingService,
                 { provide: 'CACHE_CONFIG', useValue: mockConfig },
                 { provide: 'CACHE_LOGGER', useValue: logger },
             ],
@@ -73,7 +81,7 @@ describe('CacheManager', () => {
             const entities = await acquirePromise;
 
             // Access private map to check state
-            const indepMap = (cacheManager as any).timeIndependentMap;
+            const indepMap = (cacheManager as any).cacheStore.timeIndependentMap;
             const nameMap = indepMap.get('entity1');
             const cacheItem = nameMap ? nameMap.get('1') : undefined;
 
@@ -112,7 +120,7 @@ describe('CacheManager', () => {
             jest.advanceTimersByTime(40);
 
             // It should still exist because TTL was cancelled!
-            const indepMap = (cacheManager as any).timeIndependentMap;
+            const indepMap = (cacheManager as any).cacheStore.timeIndependentMap;
             expect(indepMap.has('entity1')).toBe(true);
             expect(indepMap.get('entity1').get('1').activeGroups.size).toBe(1);
         });
@@ -127,7 +135,7 @@ describe('CacheManager', () => {
 
             expect(entities[0].days).toEqual(days);
 
-            const map = (cacheManager as any).timeDependentMap;
+            const map = (cacheManager as any).cacheStore.timeDependentMap;
             const day1Map = map.get(days[0]);
             const day2Map = map.get(days[1]);
 
@@ -153,9 +161,9 @@ describe('CacheManager', () => {
             // Acquire for Squadron 2
             await cacheManager.acquire('entity1', days, 'group1', ['fieldA'], { squadronId: ['2'] });
             
-            expect((cacheManager as any).fullyLoadedKeys.size).toBe(2);
+            expect((cacheManager as any).cacheStore.fullyLoadedKeys.size).toBe(2);
             
-            const keys = Array.from((cacheManager as any).fullyLoadedKeys);
+            const keys = Array.from((cacheManager as any).cacheStore.fullyLoadedKeys);
             expect(keys[0]).not.toEqual(keys[1]);
         });
 
@@ -165,8 +173,9 @@ describe('CacheManager', () => {
             
             await cacheManager.acquire('entity1', days, 'group1', ['fieldA'], filters);
             
-            const indepMap = (cacheManager as any).timeDependentMap;
-            const item = indepMap.get('2023-01-01').get('entity1').get('1');
+            const timeDepMap = (cacheManager as any).cacheStore.timeDependentMap;
+            const dayMap = timeDepMap.get('2023-01-01');
+            const item = dayMap.get('entity1').get('1');
             
             expect(item.activeGroups.has('group1')).toBe(true);
             

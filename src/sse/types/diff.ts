@@ -10,7 +10,7 @@ export abstract class DiffService {
     squadronIds: string[],
     startDate: string,
     endDate: string,
-    entityVersions?: Record<string, Record<string, number>>,
     dataGroup?: string,
+    entityVersions?: Record<string, Record<string, number>>,
   ): Promise<DiffEntityResult[]>;
 }

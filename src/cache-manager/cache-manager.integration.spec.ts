@@ -5,6 +5,10 @@ import { SchemaStitcherService } from '../graphql/schema-stitcher.service';
 import { IEntity } from './interfaces/entity.interface';
 import { GraphQLSchema, GraphQLObjectType, GraphQLString, GraphQLList, GraphQLID, GraphQLInt } from 'graphql';
 import { ConfigService } from '@nestjs/config';
+import { CacheStore } from './store/cache-store';
+import { CacheGroupManager } from './services/cache-group.service';
+import { CachePollingService } from './services/cache-polling.service';
+import { CacheLoaderService } from './services/cache-loader.service';
 
 interface MissionEntity extends IEntity {
     name: string;
@@ -78,6 +82,10 @@ describe('CacheManager and DataLoader Real Source Simulation', () => {
         const module: TestingModule = await Test.createTestingModule({
             providers: [
                 CacheManager,
+                CacheStore,
+                CacheGroupManager,
+                CacheLoaderService,
+                CachePollingService,
                 GraphQLDataSource,
                 {
                     provide: SchemaStitcherService,

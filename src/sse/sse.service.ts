@@ -180,8 +180,8 @@ export class SseService implements OnModuleDestroy {
       session.squadronIds,
       session.startDate,
       session.endDate,
-      undefined,
       session.dataGroup,
+      undefined
     );
 
     await this.streamDiff(session, diff);
@@ -252,16 +252,15 @@ export class SseService implements OnModuleDestroy {
     // Only release the cache subscriptions specifically for this session's squadron filters
     const mappings = this.config.get<Record<string, DataGroupConfig[]>>('cache.dataGroupMapping');
     if (mappings && session.dataGroup && mappings[session.dataGroup]) {
-        const days = this.diffService.getDaysArray(session.startDate, session.endDate);
-        const subscriberFilters = { squadronIds: session.squadronIds };
-        for (const config of mappings[session.dataGroup]) {
-            this.cacheManager.release(
-                config.entityName, 
-                days, 
-                session.dataGroup, 
-                subscriberFilters
-            );
-        }
+      const days = this.diffService.getDaysArray(session.startDate, session.endDate);
+      for (const config of mappings[session.dataGroup]) {
+        this.cacheManager.release(
+          config.entityName,
+          days,
+          session.dataGroup,
+          { squadronIds: session.squadronIds }
+        );
+      }
     }
   }
 

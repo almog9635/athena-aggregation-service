@@ -50,14 +50,16 @@ export class GraphQLDataSource<T extends IEntity> implements IDataSource<T> {
             // Union all requested fields in this group
             let mergedFields: string[] | undefined = [];
             let fetchAllFields = false;
-            for (const k of groupKeys) {
-                if (!k.requestedFields || k.requestedFields.length === 0) {
-                    fetchAllFields = true;
-                    break;
+            groupKeys.forEach(k => {
+                if (!fetchAllFields) {
+                    if (!k.requestedFields || k.requestedFields.length === 0) {
+                        fetchAllFields = true;
+                    } else {
+                        k.requestedFields.forEach(f => mergedFields!.push(f));
+                    }
                 }
-                k.requestedFields.forEach(f => mergedFields!.push(f));
-            }
-            
+            });
+
             if (fetchAllFields) {
                 mergedFields = undefined; // If any request wants everything, we fetch everything
             } else {
@@ -219,22 +221,7 @@ export class GraphQLDataSource<T extends IEntity> implements IDataSource<T> {
                 return [];
             }
 
-            // Find a query returning a list of `name` or just `name`
-            let targetFieldName = '';
-            let targetField: any = null;
-
-            for (const [fieldName, field] of Object.entries(queryType.getFields())) {
-                let returnType = field.type as any;
-
-                // Skip list and non-null wrappers to get to the base type
-                while (returnType.ofType) returnType = returnType.ofType;
-
-                if (returnType.name === name) {
-                    targetFieldName = fieldName;
-                    targetField = field;
-                    break;
-                }
-            }
+            const { targetFieldName, targetField } = this.getTargetField(schema, name);
 
             if (!targetFieldName) {
                 this.logger.debug(`${CacheErrorMessage.GRAPHQL_NO_QUERY_TYPE} '${name}'`);
@@ -248,58 +235,13 @@ export class GraphQLDataSource<T extends IEntity> implements IDataSource<T> {
                 return [];
             }
 
-            // Construct the dynamic field query. Fallback to extracting all scalars if none requested
-            let fieldsString = '';
-            if (requestedFields && requestedFields.length > 0) {
-                fieldsString = this.buildGraphQLFieldsFromPaths(requestedFields);
-            } else {
-                fieldsString = Object.entries(objectType.getFields())
-                    .filter(([_, f]) => {
-                        let t = f.type as any;
-                        while (t.ofType) t = t.ofType;
-                        return ['String', 'Int', 'Float', 'Boolean', 'ID'].includes(t.name);
-                    })
-                    .map(([n]) => n)
-                    .join(' ');
-                fieldsString += ' __typename';
-            }
+            const fieldsString = this.buildFieldsString(objectType, name, requestedFields);
 
             if (!fieldsString) {
-                this.logger.debug(`${CacheErrorMessage.GRAPHQL_NO_QUERY_TYPE} '${name}'`);
                 return [];
             }
 
-            const argStrings: string[] = [];
-
-            if (targetField?.args) {
-                for (const arg of targetField.args) {
-                    if ((arg.name === 'days' || arg.name === 'timeRange') && days && days.length > 0) {
-                        const daysList = days.map(d => '"' + d + '"').join(', ');
-                        argStrings.push(`${arg.name}: [${daysList}]`);
-                    }
-
-                    if (arg.name === 'ids' && ids && ids.length > 0) {
-                        const idsList = ids.map(id => '"' + id + '"').join(', ');
-                        argStrings.push(`${arg.name}: [${idsList}]`);
-                    }
-
-                    if (subscriberFilters && typeof subscriberFilters === 'object') {
-                        for (const [filterKey, filterValue] of Object.entries(subscriberFilters)) {
-                            if (arg.name === filterKey && filterValue !== undefined && filterValue !== null) {
-                                // Simple mapping: String arrays vs primitives
-                                if (Array.isArray(filterValue)) {
-                                    const mappedItems = filterValue.map(v => typeof v === 'string' ? `"${v}"` : String(v)).join(', ');
-                                    argStrings.push(`${arg.name}: [${mappedItems}]`);
-                                } else {
-                                    const valObj = typeof filterValue === 'string' ? `"${filterValue}"` : String(filterValue);
-                                    argStrings.push(`${arg.name}: ${valObj}`);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            const argsPart = argStrings.length > 0 ? `(${argStrings.join(', ')})` : '';
+            const argsPart = this.buildQueryArguments(targetField, days, ids, subscriberFilters);
 
             const queryStr = `query { ${targetFieldName}${argsPart} { ${fieldsString} } }`;
             const { data, errors } = await execute({
@@ -324,5 +266,79 @@ export class GraphQLDataSource<T extends IEntity> implements IDataSource<T> {
             this.logger.error(`${CacheErrorMessage.GRAPHQL_EXECUTION_ERROR} ${name}`, error);
             return [];
         }
+    }
+
+    private getTargetField(schema: any, name: string): { targetFieldName: string, targetField: any } {
+        const queryType = schema.getQueryType();
+        if (!queryType) return { targetFieldName: '', targetField: null };
+
+        const fields = Object.entries(queryType.getFields());
+        const foundField = fields.find(([_, field]) => {
+            let returnType = (field as any).type;
+            while (returnType.ofType) returnType = returnType.ofType;
+            return returnType.name === name;
+        });
+
+        return foundField
+            ? { targetFieldName: foundField[0], targetField: foundField[1] }
+            : { targetFieldName: '', targetField: null };
+    }
+
+    private buildFieldsString(objectType: GraphQLObjectType, name: string, requestedFields?: string[]): string {
+        if (requestedFields && requestedFields.length > 0) {
+            return this.buildGraphQLFieldsFromPaths(requestedFields);
+        }
+
+        const fieldsString = Object.entries(objectType.getFields())
+            .filter(([_, f]) => {
+                let t = f.type as any;
+                while (t.ofType) t = t.ofType;
+                return ['String', 'Int', 'Float', 'Boolean', 'ID'].includes(t.name);
+            })
+            .map(([n]) => n)
+            .join(' ') + ' __typename';
+
+        if (!fieldsString.trim() || fieldsString.trim() === '__typename') {
+            this.logger.debug(`${CacheErrorMessage.GRAPHQL_NO_QUERY_TYPE} '${name}'`);
+            return '';
+        }
+
+        return fieldsString;
+    }
+
+    private buildQueryArguments(targetField: any, days?: string[], ids?: string[], subscriberFilters?: Record<string, any>): string {
+        if (!targetField?.args) return '';
+
+        const argStrings: string[] = [];
+
+        targetField.args.forEach((arg: any) => {
+            if ((arg.name === 'days' || arg.name === 'timeRange') && days && days.length > 0) {
+                const formattedDays = days.map(d => `"${d}"`).join(', ');
+                argStrings.push(`${arg.name}: [${formattedDays}]`);
+            }
+
+            if (arg.name === 'ids' && ids && ids.length > 0) {
+                const formattedIds = ids.map(id => `"${id}"`).join(', ');
+                argStrings.push(`${arg.name}: [${formattedIds}]`);
+            }
+
+            if (subscriberFilters) {
+                Object.entries(subscriberFilters).forEach(([filterKey, filterValue]) => {
+                    if (arg.name === filterKey && filterValue !== undefined && filterValue !== null) {
+                        let val: string;
+
+                        if (Array.isArray(filterValue)) {
+                            const items = filterValue.map(v => typeof v === 'string' ? `"${v}"` : String(v)).join(', ');
+                            val = `[${items}]`;
+                        } else {
+                            val = typeof filterValue === 'string' ? `"${filterValue}"` : String(filterValue);
+                        }
+                        argStrings.push(`${arg.name}: ${val}`);
+                    }
+                });
+            }
+        });
+
+        return argStrings.length > 0 ? `(${argStrings.join(', ')})` : '';
     }
 }

@@ -6,6 +6,10 @@ import { IDataSource } from './interfaces/datasource.interface';
 import { IEntity } from './interfaces/entity.interface';
 import { GraphQLStitchingModule } from '../graphql/graphql-stitching.module';
 import { GraphQLDataSource } from './graphql-data-source';
+import { CacheStore } from './store/cache-store';
+import { CacheGroupManager } from './services/cache-group.service';
+import { CachePollingService } from './services/cache-polling.service';
+import { CacheLoaderService } from './services/cache-loader.service';
 
 @Module({})
 export class CacheManagerModule {
@@ -40,6 +44,10 @@ export class CacheManagerModule {
                     },
                     inject: [ConfigService, GraphQLDataSource],
                 },
+                CacheStore,
+                CacheGroupManager,
+                CacheLoaderService,
+                CachePollingService,
                 CacheManager,
             ],
             exports: [CacheManager],

@@ -10,6 +10,7 @@ export interface ICacheLogger {
     logAggregationComplete(name: string, timeTakenMs: number, days?: string[]): void;
     logPollingUpdate(name: string, newVersion: number, days?: string[]): void;
     logRelationDisposal(name: string, id: string): void;
+    logAssociationHydration(parentName: string, count: number): void;
     logError(message: string, error: any): void;
 }
 
@@ -55,6 +56,10 @@ export class DefaultCacheLogger implements ICacheLogger {
 
     logRelationDisposal(name: string, id: string): void {
         this.logger.log(`[RELATION DISPOSAL] Removing orphaned ${name}:${id} from active tracking.`);
+    }
+
+    logAssociationHydration(parentName: string, count: number): void {
+        this.logger.debug(`[RELATION HYDRATION] Fetched and stored ${count} associated entities for ${parentName}.`);
     }
 
     logError(message: string, error: any): void {
