@@ -4,16 +4,6 @@
         "baseTickMs": 5000,
         "pollingIntervalMs": 300000,
         "discoveryIntervalMs": 300000,
-        "timeRange": {
-            "pastDays": 3,
-            "futureDays": 3
-        },
-        "entitySettings": {
-            "User": {
-                "pollingIntervalMs": 150000,
-                "discoveryIntervalMs": 150000
-            }
-        },
         "pollingTimeRange": {
             "pastDays": 3,
             "futureDays": 3
@@ -21,6 +11,34 @@
         "onDemandTimeRange": {
             "pastDays": 30,
             "futureDays": 14
+        },
+        "entitySettings": {
+            "User": {
+                "pollingIntervalMs": 150000,
+                "discoveryIntervalMs": 150000
+            }
+        },
+        "dataGroupMapping": {
+            "UserBasic": [
+                {
+                    "entityName": "User",
+                    "fields": ["name", "email"],
+                    "defaultTimeRange": {
+                        "pastDays": 3,
+                        "futureDays": 3
+                    }
+                }
+            ],
+            "UserHistory": [
+                {
+                    "entityName": "User",
+                    "fields": ["loginHistory"],
+                    "defaultTimeRange": {
+                        "pastDays": 30,
+                        "futureDays": 0
+                    }
+                }
+            ]
         }
     }
 }

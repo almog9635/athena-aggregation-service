@@ -252,4 +252,27 @@ export class CacheManager<T extends IEntity> implements OnModuleInit, OnModuleDe
             return requestedFields.some((field) => !allCachedFields.has(field));
         });
     }
+
+    // this function should be in another class that will handle the fetching of uncached fields
+    // but because there is already a connection to the cacheLoaderService,
+    // I put it here instead of making a new one just for one function   
+    public async fetchUncachedFields(
+        entityName: string,
+        ids: string[],
+        fields: string[],
+        days?: string[],
+        subscriberFilters?: Record<string, any>
+    ): Promise<Partial<T>[]> {
+        if (!this.config.dataSource.fetchByIds) {
+            this.logger.logError(`fetchUncachedFields failed: dataSource.fetchByIds is not implemented for ${entityName}`, new Error());
+            return [];
+        }
+
+        try {
+            return await this.config.dataSource.fetchByIds(entityName, ids, days, fields, subscriberFilters);
+        } catch (err) {
+            this.logger.logError(`Failed to fetch uncached fields for ${entityName}`, err);
+            return [];
+        }
+    }
 }

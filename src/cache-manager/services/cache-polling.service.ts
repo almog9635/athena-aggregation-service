@@ -9,7 +9,7 @@ import type { IEntity, ITimeDependentEntity } from '../interfaces/entity.interfa
 import { CacheErrorMessage } from '../enums/error-message.enum';
 import { processFetchedFragments } from '../utils/entity.util';
 import { mergeChanges } from '../utils/merge.util';
-import { isInsideConfigRange } from '../utils/time.util';
+import { getUnionOfConfiguredDays, isInsideConfigRange } from '../utils/time.util';
 import { CacheLoaderService } from './cache-loader.service';
 
 @Injectable()
@@ -47,8 +47,27 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
             this.pollingIntervalId = setInterval(() => this.pollTick(), tickRate);
         }
 
-        const dayMs = 1000 * 60 * 60 * 24;
-        this.rolloverIntervalId = setInterval(() => this.rollover(), dayMs);
+        this.scheduleMidnightRollover();
+    }
+
+    private scheduleMidnightRollover() {
+        if (this.rolloverIntervalId) {
+            clearTimeout(this.rolloverIntervalId);
+            this.rolloverIntervalId = null;
+        }
+
+        const now = new Date();
+        const midnight = new Date(now);
+        midnight.setHours(24, 0, 0, 0); // Next midnight
+        const msUntilMidnight = midnight.getTime() - now.getTime();
+
+        this.logger.logPollingUpdate(`Scheduling Midnight Rollover in ${Math.round(msUntilMidnight / 1000 / 60)} minutes`, 0, []);
+
+        this.rolloverIntervalId = setTimeout(() => {
+            this.executeRollover();
+            // Then schedule the next one exactly 24 hours later
+            this.rolloverIntervalId = setInterval(() => this.executeRollover(), 1000 * 60 * 60 * 24);
+        }, msUntilMidnight) as unknown as NodeJS.Timeout;
     }
 
     private getEntityPollingInterval(entityName: string): number {
@@ -206,10 +225,21 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
 
                 if (cacheItem) {
                     if (completeEntity.version && completeEntity.version > cacheItem.data.version) {
+                        const originalDays = (cacheItem.data as unknown as ITimeDependentEntity).days;
+                        const originalDaysStr = originalDays ? JSON.stringify([...originalDays].sort()) : undefined;
+
                         mergeChanges(cacheItem.data, completeEntity, (removedTypename, removedId) => {
                             this.logger.logRelationDisposal(removedTypename, removedId);
                             this.onRelationDisposed.next({ typeName: removedTypename, id: removedId, days });
                         });
+
+                        const newDays = (cacheItem.data as unknown as ITimeDependentEntity).days;
+                        const newDaysStr = newDays ? JSON.stringify([...newDays].sort()) : undefined;
+
+                        if (originalDays && newDays && originalDaysStr !== newDaysStr) {
+                            this.cacheStore.reindex(cacheItem, pName, completeEntity.id, originalDays, newDays);
+                        }
+
                         this.logger.logPollingUpdate(`${pName}:${completeEntity.id}`, completeEntity.version, days);
                         this.onEntityUpdated.next(cacheItem.data);
                     }
@@ -224,15 +254,26 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
         }
     }
 
-    private rollover() {
+    private async executeRollover() {
+        this.logger.logPollingUpdate('Starting midnight rollover session', 0, []);
+
+        // 1. Determine all active days across all configurations
+        const activeDaysList = this.getActiveDays();
+        const activeDays = new Set(activeDaysList);
+
+        // 2. Remove stale day buckets in CacheStore
+        this.cacheStore.removeOutOfRangeDays(activeDaysList);
+
+        // 3. TTL Countdown for entities that are now out of any active range but might still be referenced
         const names = this.cacheStore.getAllEntityNames();
 
         names.forEach(name => {
             this.cacheStore.getAllEntities(name)
                 .filter(item => {
                     const entityDays = (item as unknown as ITimeDependentEntity).days;
-
-                    return entityDays && !isInsideConfigRange(entityDays, this.config.pollingTimeRange);
+                    // If any of the entity days are still in the active window, we keep it
+                    const stillRelevant = entityDays?.some(d => activeDays.has(d));
+                    return !stillRelevant;
                 })
                 .forEach(item => {
                     const entityDays = (item as unknown as ITimeDependentEntity).days;
@@ -243,6 +284,15 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
                     }
                 });
         });
+
+        // 4. Force a preload to catch the 'new' day that just entered the window
+        await this.cacheLoaderService.preloadConfiguredDays();
+
+        this.logger.logPollingUpdate('Midnight rollover completed', 0, activeDaysList);
+    }
+
+    public getActiveDays(): string[] {
+        return getUnionOfConfiguredDays(this.config);
     }
 
     private getUnifiedFields(item: CacheItem<T>): string[] {

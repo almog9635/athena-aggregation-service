@@ -4,6 +4,9 @@ import { IEntity } from './entity.interface';
 export interface DataGroupConfig {
     entityName: string;
     fields: string[];
+    uncachedFields?: string[];
+    /** Specific time range for entities in this DataGroup. */
+    defaultTimeRange: TimeRangeConfig;
 }
 
 export interface TimeRangeConfig {

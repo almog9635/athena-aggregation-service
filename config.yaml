@@ -3,6 +3,12 @@ cache:
   baseTickMs: 5000 
   pollingIntervalMs: 600000 
   discoveryIntervalMs: 600000 
+  pollingTimeRange:
+    pastDays: 3
+    futureDays: 3
+  onDemandTimeRange:
+    pastDays: 14
+    futureDays: 30
   entitySettings:
     User:
       pollingIntervalMs: 300000 
@@ -10,9 +16,19 @@ cache:
     Mission:
       pollingIntervalMs: 1200000 
       discoveryIntervalMs: 1200000 
-  pollingTimeRange:
-    pastDays: 3
-    futureDays: 3
-  onDemandTimeRange:
-    pastDays: 14
-    futureDays: 30
+  dataGroupMapping:
+    UserBasic:
+      - entityName: User
+        fields:
+          - name
+          - email
+        defaultTimeRange:
+          pastDays: 3
+          futureDays: 3
+    UserHistory:
+      - entityName: User
+        fields:
+          - loginHistory
+        defaultTimeRange:
+          pastDays: 30
+          futureDays: 0

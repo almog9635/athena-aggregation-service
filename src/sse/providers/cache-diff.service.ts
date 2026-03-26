@@ -41,23 +41,50 @@ export class CacheDiffService extends DiffService {
       entityConfigs.map(async (config) => {
         const entities = await this.cacheManager.acquire(config.entityName, days, dataGroup, config.fields, { squadronIds });
 
-        return Promise.all(entities
-          .filter(entity => !entity.squadronId || squadronIds.includes(entity.squadronId))
-          .map(async (entity) => {
-            const currentVersion = entity.version || 1;
-            const clientVersion = entityVersions?.[config.entityName]?.[entity.id];
+        // Filter for relevant updates
+        const activeUpdates = entities.filter(entity => {
+          if (entity.squadronId && !squadronIds.includes(entity.squadronId)) return false;
 
-            if (clientVersion === undefined || currentVersion > clientVersion) {
-              const resolvedData = await this.resolveNestedPointers(entity, days, new Set<string>());
-              return {
-                entityName: config.entityName,
-                entityId: entity.id,
-                version: currentVersion,
-                data: resolvedData,
-              };
-            }
-            return null;
-          }));
+          const currentVersion = entity.version || 1;
+          const clientVersion = entityVersions?.[config.entityName]?.[entity.id];
+          return clientVersion === undefined || currentVersion > clientVersion;
+        });
+
+        if (activeUpdates.length === 0) return [];
+
+        // 1. Fetch uncached side-loaded fields if requested by the DataGroup
+        const uncachedMap = new Map<string, any>();
+        if (config.uncachedFields && config.uncachedFields.length > 0) {
+          const idsToFetch = activeUpdates.map(e => e.id);
+          const uncachedData = await this.cacheManager.fetchUncachedFields(
+            config.entityName,
+            idsToFetch,
+            config.uncachedFields,
+            days,
+            { squadronIds }
+          );
+
+          uncachedData.forEach(item => {
+            if (item.id) uncachedMap.set(item.id, item);
+          });
+        }
+
+        return Promise.all(activeUpdates.map(async (entity) => {
+          let resolvedData = await this.resolveNestedPointers(entity, days, new Set<string>());
+
+          // 2. Attach uncached fields directly to the payload
+          if (uncachedMap.has(entity.id)) {
+            const uncachedFields = uncachedMap.get(entity.id);
+            resolvedData = { ...resolvedData, ...uncachedFields };
+          }
+
+          return {
+            entityName: config.entityName,
+            entityId: entity.id,
+            version: entity.version || 1,
+            data: resolvedData,
+          };
+        }));
       })
     )).flat().filter(res => res !== null) as DiffEntityResult[];
 

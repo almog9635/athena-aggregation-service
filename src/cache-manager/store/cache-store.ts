@@ -171,6 +171,51 @@ export class CacheStore<T extends IEntity> {
         }
     }
 
+    /**
+     * Re-indexes an existing item across different day buckets.
+     * Removes the item from days it no longer belongs to, and adds it to new days.
+     */
+    public reindex(item: CacheItem<T>, entityName: string, id: string, oldDays: string[], newDays: string[]): void {
+        const toRemove = oldDays.filter(day => !newDays.includes(day));
+        const toAdd = newDays.filter(day => !oldDays.includes(day));
+
+        // Remove from old days
+        for (const day of toRemove) {
+            const dayMap = this.timeDependentMap.get(day);
+            if (dayMap) {
+                const nameMap = dayMap.get(entityName);
+                if (nameMap) {
+                    nameMap.delete(id);
+                    if (nameMap.size === 0) {
+                        dayMap.delete(entityName);
+                    }
+                }
+                if (dayMap.size === 0) {
+                    this.timeDependentMap.delete(day);
+                }
+            }
+        }
+
+        // Add to new days
+        for (const day of toAdd) {
+            let dayMap = this.timeDependentMap.get(day);
+            if (!dayMap) {
+                dayMap = new Map<string, Map<string, CacheItem<T>>>();
+                this.timeDependentMap.set(day, dayMap);
+            }
+
+            let nameMap = dayMap.get(entityName);
+            if (!nameMap) {
+                nameMap = new Map<string, CacheItem<T>>();
+                dayMap.set(entityName, nameMap);
+            }
+
+            nameMap.set(id, item);
+        }
+
+        this.logger.logPollingUpdate(`Reindexed ${entityName}:${id}`, item.data.version, newDays);
+    }
+
     public cancelTtl(item: CacheItem<T>, entityName: string, id: string, days?: string[]) {
         if (item.ttlTimeout) {
             clearTimeout(item.ttlTimeout);
@@ -254,6 +299,26 @@ export class CacheStore<T extends IEntity> {
 
     public countActiveGroups(item: CacheItem<T>): number {
         return Object.keys(item.activeGroups).length;
+    }
+
+    public removeDay(day: string): void {
+        const dayMap = this.timeDependentMap.get(day);
+
+        if (dayMap) {
+            this.timeDependentMap.delete(day);
+            this.logger.logPollingUpdate(`Removed day bucket: ${day}`, 0, [day]);
+        }
+    }
+
+    public removeOutOfRangeDays(activeDays: string[]): void {
+        const activeSet = new Set(activeDays);
+        const allDays = Array.from(this.timeDependentMap.keys());
+
+        for (const day of allDays) {
+            if (!activeSet.has(day)) {
+                this.removeDay(day);
+            }
+        }
     }
 
     public clearAll(): void {

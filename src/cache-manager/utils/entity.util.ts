@@ -14,7 +14,10 @@ export function ensureEntityContract<T extends IEntity>(entity: T, name: string,
     }
 
     if (days && days.length > 0) {
-        (entity as unknown as ITimeDependentEntity).days = days;
+        const timeEntity = entity as unknown as ITimeDependentEntity;
+        if (!timeEntity.days || timeEntity.days.length === 0) {
+            timeEntity.days = days;
+        }
     }
 }
 
