@@ -4,7 +4,6 @@ import { CacheStore } from './store/cache-store';
 import { CacheGroupManager } from './services/cache-group.service';
 import { CachePollingService } from './services/cache-polling.service';
 import { CacheLoaderService } from './services/cache-loader.service';
-import { DefaultCacheLogger } from './logger/cache-logger.service';
 import { IDataSource } from './interfaces/datasource.interface';
 import { isInsideConfigRange } from './utils/time.util';
 
@@ -46,36 +45,20 @@ describe('Date Configuration Logic', () => {
                 CacheGroupManager,
                 CachePollingService,
                 CacheLoaderService,
-                { provide: 'CACHE_LOGGER', useValue: new DefaultCacheLogger() },
-                {
-                    provide: 'CACHE_CONFIG',
-                    useValue: {
-                        dataSource,
-                        ttlMs: 60000,
-                        baseTickMs: 5000,
-                        pollingIntervalMs: 300000,
-                        pollingTimeRange: {
-                            pastDays: 3,
-                            futureDays: 3
-                        },
-                        onDemandTimeRange: {
-                            pastDays: 30,
-                            futureDays: 14
-                        }
+                { provide: 'CACHE_CONFIG', useValue: {
+                    dataSource,
+                    ttlMs: 60000,
+                    baseTickMs: 5000,
+                    pollingIntervalMs: 300000,
+                    pollingTimeRange: {
+                        pastDays: 3,
+                        futureDays: 3
                     },
-                },
-                {
-                    provide: 'CACHE_LOGGER',
-                    useValue: {
-                        logHit: jest.fn(),
-                        logMiss: jest.fn(),
-                        logAggregationStart: jest.fn(),
-                        logAggregationComplete: jest.fn(),
-                        logPollingUpdate: jest.fn(),
-                        logError: jest.fn(),
-                        logRelationDisposal: jest.fn(),
-                    },
-                },
+                    onDemandTimeRange: {
+                        pastDays: 30,
+                        futureDays: 14
+                    }
+                }},
             ],
         }).compile();
 

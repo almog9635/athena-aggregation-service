@@ -3,7 +3,6 @@ import { CacheStore } from './store/cache-store';
 import { CachePollingService } from './services/cache-polling.service';
 import { CacheLoaderService } from './services/cache-loader.service';
 import { CacheGroupManager } from './services/cache-group.service';
-import { DefaultCacheLogger } from './logger/cache-logger.service';
 import { IEntity } from './interfaces/entity.interface';
 
 describe('Midnight Rollover', () => {
@@ -38,7 +37,6 @@ describe('Midnight Rollover', () => {
                 CacheLoaderService,
                 CacheGroupManager,
                 { provide: 'CACHE_CONFIG', useValue: mockConfig },
-                { provide: 'CACHE_LOGGER', useValue: new DefaultCacheLogger() }
             ],
         }).compile();
 

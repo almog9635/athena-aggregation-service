@@ -1,7 +1,6 @@
-import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { Subject, Subscription } from 'rxjs';
 import type { CacheConfig } from './interfaces/cache-config.interface';
-import { DefaultCacheLogger, type ICacheLogger } from './logger/cache-logger.service';
 import type { IEntity } from './interfaces/entity.interface';
 import { CacheErrorMessage } from './enums/error-message.enum';
 import { CacheStore } from './store/cache-store';
@@ -27,8 +26,9 @@ export class CacheManager<T extends IEntity> implements OnModuleInit, OnModuleDe
         private readonly cachePollingService: CachePollingService<T>,
         @Inject('CACHE_CONFIG') private readonly config: CacheConfig<T>,
         private readonly cacheLoaderService: CacheLoaderService<T>,
-        @Inject('CACHE_LOGGER') private readonly logger: ICacheLogger = new DefaultCacheLogger(),
     ) { }
+
+    private readonly logger = new Logger('CacheManager');
 
     async onModuleInit() {
         this.cachePollingService.startBackgroundTasks();
@@ -101,18 +101,18 @@ export class CacheManager<T extends IEntity> implements OnModuleInit, OnModuleDe
             }
 
             if (isUnderFetched) {
-                this.logger.logMiss(`${entityName} (Under-fetched fields)`, days);
+                this.logger.debug(`[MISS] ${entityName} (Under-fetched fields)${days && days.length > 0 ? ` [Days: ${days.join(',')}]` : ''}`);
                 // Deliberately drop the fully loaded key to force a re-aggregation that includes the missing fields.
                 this.cacheStore.fullyLoadedKeys.delete(queryKey);
             } else {
                 // If we have a hit, we still need to register the root subscription for discovery
                 this.cacheGroupManager.registerRootSubscription(entityName, queryKey, days, dataGroup, subscriberFilters);
-                this.logger.logHit(entityName, days);
+                this.logger.debug(`[HIT] ${entityName}${days && days.length > 0 ? ` [Days: ${days.join(',')}]` : ''}`);
 
                 return Array.from(resultsMap.values());
             }
         } else {
-            this.logger.logMiss(entityName, days);
+            this.logger.debug(`[MISS] ${entityName}${days && days.length > 0 ? ` [Days: ${days.join(',')}]` : ''}`);
             this.cacheGroupManager.registerRootSubscription(entityName, queryKey, days, dataGroup, subscriberFilters);
         }
 
@@ -177,7 +177,7 @@ export class CacheManager<T extends IEntity> implements OnModuleInit, OnModuleDe
         const visited = visitedIds || new Set<string>();
 
         if (resultsMap.size === 0) {
-            this.logger.logError(CacheErrorMessage.RELEASE_NON_EXISTENT, { name: entityName, days });
+            this.logger.error(`[ERROR] ${CacheErrorMessage.RELEASE_NON_EXISTENT}`, { name: entityName, days });
             return;
         }
 
@@ -264,14 +264,14 @@ export class CacheManager<T extends IEntity> implements OnModuleInit, OnModuleDe
         subscriberFilters?: Record<string, any>
     ): Promise<Partial<T>[]> {
         if (!this.config.dataSource.fetchByIds) {
-            this.logger.logError(`fetchUncachedFields failed: dataSource.fetchByIds is not implemented for ${entityName}`, new Error());
+            this.logger.error(`[ERROR] fetchUncachedFields failed: dataSource.fetchByIds is not implemented for ${entityName}`, new Error().stack);
             return [];
         }
 
         try {
             return await this.config.dataSource.fetchByIds(entityName, ids, days, fields, subscriberFilters);
         } catch (err) {
-            this.logger.logError(`Failed to fetch uncached fields for ${entityName}`, err);
+            this.logger.error(`[ERROR] Failed to fetch uncached fields for ${entityName}`, err instanceof Error ? err.stack : err);
             return [];
         }
     }

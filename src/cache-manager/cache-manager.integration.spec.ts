@@ -109,24 +109,6 @@ describe('CacheManager and DataLoader Real Source Simulation', () => {
                     }),
                     inject: [GraphQLDataSource]
                 },
-                {
-                    provide: 'CACHE_LOGGER',
-                    useValue: {
-                        logHit: jest.fn(),
-                        logMiss: jest.fn(),
-                        logEviction: jest.fn(),
-                        logTtlStart: jest.fn(),
-                        logTtlCancel: jest.fn(),
-                        logAggregationStart: jest.fn(),
-                        logAggregationComplete: jest.fn(),
-                        logPollingUpdate: jest.fn(),
-                        logRelationDisposal: jest.fn(),
-                        logError: jest.fn(),
-                        log: jest.fn(),
-                        debug: jest.fn(),
-                        warn: jest.fn()
-                    }
-                }
             ],
         }).compile();
 

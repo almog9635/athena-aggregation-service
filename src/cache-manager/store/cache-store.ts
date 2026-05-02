@@ -1,9 +1,7 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, Logger } from '@nestjs/common';
 import { IEntity } from '../interfaces/entity.interface';
 import { CacheItem } from '../interfaces/cache-item';
 import type { CacheConfig } from '../interfaces/cache-config.interface';
-import { DefaultCacheLogger } from '../logger/cache-logger.service';
-import type { ICacheLogger } from '../logger/cache-logger.service';
 
 @Injectable()
 export class CacheStore<T extends IEntity> {
@@ -16,9 +14,10 @@ export class CacheStore<T extends IEntity> {
 
     public readonly fullyLoadedKeys = new Set<string>();
 
+    private readonly logger = new Logger('CacheManager');
+
     constructor(
         @Inject('CACHE_CONFIG') private readonly config: CacheConfig<T>,
-        @Inject('CACHE_LOGGER') private readonly logger: ICacheLogger = new DefaultCacheLogger(),
     ) { }
 
     /**
@@ -213,14 +212,16 @@ export class CacheStore<T extends IEntity> {
             nameMap.set(id, item);
         }
 
-        this.logger.logPollingUpdate(`Reindexed ${entityName}:${id}`, item.data.version, newDays);
+        const daysLabel = newDays.length > 0 ? ` [Days: ${newDays.join(',')}]` : '';
+        this.logger.log(`[UPDATE] Reindexed ${entityName}:${id}${daysLabel} polled new version: ${item.data.version}. Modified fields merged.`);
     }
 
     public cancelTtl(item: CacheItem<T>, entityName: string, id: string, days?: string[]) {
         if (item.ttlTimeout) {
             clearTimeout(item.ttlTimeout);
             item.ttlTimeout = null;
-            this.logger.logTtlCancel(`${entityName}:${id}`, days);
+            const daysLabel = days && days.length > 0 ? ` [Days: ${days.join(',')}]` : '';
+            this.logger.debug(`[TTL CANCELLED] ${entityName}:${id}${daysLabel} re-acquired.`);
         }
     }
 
@@ -230,7 +231,8 @@ export class CacheStore<T extends IEntity> {
             return;
         }
 
-        this.logger.logTtlStart(`${entityName}:${id}`, this.config.ttlMs, days);
+        const daysLabelTtl = days && days.length > 0 ? ` [Days: ${days.join(',')}]` : '';
+        this.logger.debug(`[TTL START] ${entityName}:${id}${daysLabelTtl} refCount is 0. Evicting in ${this.config.ttlMs}ms.`);
 
         item.ttlTimeout = setTimeout(() => {
             this.evict(entityName, id, days, cacheGroupManager);
@@ -274,7 +276,8 @@ export class CacheStore<T extends IEntity> {
             const queryKey = cacheGroupManager.getQueryKey(name, days);
             this.fullyLoadedKeys.delete(queryKey);
         }
-        this.logger.logEviction(`${name}:${id}`, days);
+        const daysLabelEvict = days && days.length > 0 ? ` [Days: ${days.join(',')}]` : '';
+        this.logger.log(`[EVICTED] ${name}:${id}${daysLabelEvict} cleared from memory.`);
     }
 
     public clearAllTtls(): void {
@@ -306,7 +309,7 @@ export class CacheStore<T extends IEntity> {
 
         if (dayMap) {
             this.timeDependentMap.delete(day);
-            this.logger.logPollingUpdate(`Removed day bucket: ${day}`, 0, [day]);
+            this.logger.log(`[UPDATE] Removed day bucket: ${day} [Days: ${day}] polled new version: 0. Modified fields merged.`);
         }
     }
 

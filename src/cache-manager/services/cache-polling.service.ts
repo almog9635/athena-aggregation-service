@@ -1,10 +1,9 @@
-import { Injectable, Inject, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Inject, OnModuleDestroy, Logger } from '@nestjs/common';
 import { Subject } from 'rxjs';
 import { CacheStore } from '../store/cache-store';
 import { CacheGroupManager } from './cache-group.service';
 import type { CacheConfig } from '../interfaces/cache-config.interface';
 import { CacheItem } from '../interfaces/cache-item';
-import { DefaultCacheLogger, type ICacheLogger } from '../logger/cache-logger.service';
 import type { IEntity, ITimeDependentEntity } from '../interfaces/entity.interface';
 import { CacheErrorMessage } from '../enums/error-message.enum';
 import { processFetchedFragments } from '../utils/entity.util';
@@ -22,12 +21,13 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
     private pollingIntervalId: NodeJS.Timeout | null = null;
     private rolloverIntervalId: NodeJS.Timeout | null = null;
 
+    private readonly logger = new Logger('CacheManager');
+
     constructor(
         private readonly cacheStore: CacheStore<T>,
         private readonly cacheGroupManager: CacheGroupManager,
         private readonly cacheLoaderService: CacheLoaderService<T>,
         @Inject('CACHE_CONFIG') private readonly config: CacheConfig<T>,
-        @Inject('CACHE_LOGGER') private readonly logger: ICacheLogger = new DefaultCacheLogger(),
     ) { }
 
     onModuleDestroy() {
@@ -61,7 +61,7 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
         midnight.setHours(24, 0, 0, 0); // Next midnight
         const msUntilMidnight = midnight.getTime() - now.getTime();
 
-        this.logger.logPollingUpdate(`Scheduling Midnight Rollover in ${Math.round(msUntilMidnight / 1000 / 60)} minutes`, 0, []);
+        this.logger.log(`[UPDATE] Scheduling Midnight Rollover in ${Math.round(msUntilMidnight / 1000 / 60)} minutes polled new version: 0. Modified fields merged.`);
 
         this.rolloverIntervalId = setTimeout(() => {
             this.executeRollover();
@@ -110,7 +110,7 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
                 const dataGroup = sub.dataGroups.keys().next().value;
 
                 await this.cacheLoaderService.aggregateFromSources(sub.entityName, sub.days, dataGroup, undefined, sub.subscriberFilters).catch(err => {
-                    this.logger.logError(`Discovery error for ${sub.entityName}`, err);
+                    this.logger.error(`[ERROR] Discovery error for ${sub.entityName}`, err instanceof Error ? err.stack : err);
                 });
             }
         }
@@ -211,8 +211,7 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
                 fetchedFragments.push(...filtered);
             }
         } catch (err) {
-            this.logger.logError(`${CacheErrorMessage.POLLING_ERROR} ${name}`, err);
-
+            this.logger.error(`[ERROR] ${CacheErrorMessage.POLLING_ERROR} ${name}`, err instanceof Error ? err.stack : err);
             return;
         }
 
@@ -229,7 +228,7 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
                         const originalDaysStr = originalDays ? JSON.stringify([...originalDays].sort()) : undefined;
 
                         mergeChanges(cacheItem.data, completeEntity, (removedTypename, removedId) => {
-                            this.logger.logRelationDisposal(removedTypename, removedId);
+                            this.logger.log(`[RELATION DISPOSAL] Removing orphaned ${removedTypename}:${removedId} from active tracking.`);
                             this.onRelationDisposed.next({ typeName: removedTypename, id: removedId, days });
                         });
 
@@ -240,14 +239,16 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
                             this.cacheStore.reindex(cacheItem, pName, completeEntity.id, originalDays, newDays);
                         }
 
-                        this.logger.logPollingUpdate(`${pName}:${completeEntity.id}`, completeEntity.version, days);
+                        const daysLabel1 = days && days.length > 0 ? ` [Days: ${days.join(',')}]` : '';
+                        this.logger.log(`[UPDATE] ${pName}:${completeEntity.id}${daysLabel1} polled new version: ${completeEntity.version}. Modified fields merged.`);
                         this.onEntityUpdated.next(cacheItem.data);
                     }
                 } else {
                     // Newly discovered entity ID fragment from a parent's relational array
                     // Store it so the upcoming lightweight child poll actively picks it up.
                     this.cacheStore.storeInCache(completeEntity, pName, completeEntity.id, days);
-                    this.logger.logPollingUpdate(`NEW ${pName}:${completeEntity.id}`, completeEntity.version, days);
+                    const daysLabel2 = days && days.length > 0 ? ` [Days: ${days.join(',')}]` : '';
+                    this.logger.log(`[UPDATE] NEW ${pName}:${completeEntity.id}${daysLabel2} polled new version: ${completeEntity.version}. Modified fields merged.`);
                     this.onEntityUpdated.next(completeEntity);
                 }
             }
@@ -255,7 +256,7 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
     }
 
     private async executeRollover() {
-        this.logger.logPollingUpdate('Starting midnight rollover session', 0, []);
+        this.logger.log(`[UPDATE] Starting midnight rollover session polled new version: 0. Modified fields merged.`);
 
         // 1. Determine all active days across all configurations
         const activeDaysList = this.getActiveDays();
@@ -288,7 +289,8 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
         // 4. Force a preload to catch the 'new' day that just entered the window
         await this.cacheLoaderService.preloadConfiguredDays();
 
-        this.logger.logPollingUpdate('Midnight rollover completed', 0, activeDaysList);
+        const activeDaysLabel = activeDaysList.length > 0 ? ` [Days: ${activeDaysList.join(',')}]` : '';
+        this.logger.log(`[UPDATE] Midnight rollover completed${activeDaysLabel} polled new version: 0. Modified fields merged.`);
     }
 
     public getActiveDays(): string[] {

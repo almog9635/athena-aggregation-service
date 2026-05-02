@@ -6,7 +6,6 @@ import { CacheStore } from './store/cache-store';
 import { CacheGroupManager } from './services/cache-group.service';
 import { GraphQLDataSource } from './graphql-data-source';
 import { IEntity, ITimeDependentEntity } from './interfaces/entity.interface';
-import { DefaultCacheLogger } from './logger/cache-logger.service';
 
 interface MissionEntity extends ITimeDependentEntity {
     name: string;
@@ -54,8 +53,7 @@ describe('Floating Entities (Day Migration)', () => {
                         pollingIntervalMs: 5000,
                         dataSource: mockDataSource
                     }
-                },
-                { provide: 'CACHE_LOGGER', useValue: new DefaultCacheLogger() }
+                }
             ]
         }).compile();
 

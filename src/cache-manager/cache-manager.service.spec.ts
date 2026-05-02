@@ -2,7 +2,6 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { CacheManager } from './cache-manager.service';
 import { CacheConfig } from './interfaces/cache-config.interface';
 import { ITimeDependentEntity } from './interfaces/entity.interface';
-import { DefaultCacheLogger } from './logger/cache-logger.service';
 import { MockDataSource } from '../../test/mock-data-source';
 import { CacheStore } from './store/cache-store';
 import { CacheGroupManager } from './services/cache-group.service';
@@ -19,7 +18,6 @@ describe('CacheManager', () => {
     let cacheManager: CacheManager<TestEntity>;
     let sourceA: MockDataSource<TestEntity>;
     let sourceB: MockDataSource<TestEntity>;
-    let logger: DefaultCacheLogger;
 
     const mockConfig: CacheConfig<TestEntity> = {
         ttlMs: 50,
@@ -36,7 +34,6 @@ describe('CacheManager', () => {
         }, 0);
 
         mockConfig.dataSource = stitchedSource;
-        logger = new DefaultCacheLogger();
 
         const module: TestingModule = await Test.createTestingModule({
             providers: [
@@ -46,7 +43,6 @@ describe('CacheManager', () => {
                 CacheLoaderService,
                 CachePollingService,
                 { provide: 'CACHE_CONFIG', useValue: mockConfig },
-                { provide: 'CACHE_LOGGER', useValue: logger },
             ],
         }).compile();
 

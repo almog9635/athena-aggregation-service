@@ -1,12 +1,8 @@
-import { Injectable, Inject } from '@nestjs/common';
+import { Injectable, Inject, Logger } from '@nestjs/common';
 import { Subject } from 'rxjs';
 import { CacheStore } from '../store/cache-store';
 import { CacheGroupManager } from './cache-group.service';
 import type { CacheConfig } from '../interfaces/cache-config.interface';
-import {
-  DefaultCacheLogger,
-  type ICacheLogger,
-} from '../logger/cache-logger.service';
 import type {
   IEntity,
   ITimeDependentEntity,
@@ -26,12 +22,12 @@ export class CacheLoaderService<T extends IEntity> {
     days?: string[];
   }>();
 
+  private readonly logger = new Logger('CacheManager');
+
   constructor(
     private readonly cacheStore: CacheStore<T>,
     private readonly cacheGroupManager: CacheGroupManager,
     @Inject('CACHE_CONFIG') private readonly config: CacheConfig<T>,
-    @Inject('CACHE_LOGGER')
-    private readonly logger: ICacheLogger = new DefaultCacheLogger(),
   ) { }
 
   public async preloadConfiguredDays() {
@@ -41,7 +37,8 @@ export class CacheLoaderService<T extends IEntity> {
       return;
     }
 
-    this.logger.logAggregationStart(`PRELOAD_CURRENT_WINDOW`, days);
+    const daysLabel = days.length > 0 ? ` [Days: ${days.join(',')}]` : '';
+    this.logger.debug(`[AGGREGATION START] Building PRELOAD_CURRENT_WINDOW${daysLabel} from sources...`);
     const start = Date.now();
 
     const nameToIdAndFragments = new Map<string, Map<string, Partial<T>>>();
@@ -67,7 +64,7 @@ export class CacheLoaderService<T extends IEntity> {
           }
         }
       } catch (err) {
-        this.logger.logError(`Preload fetchAll error from source`, err);
+        this.logger.error(`[ERROR] Preload fetchAll error from source`, err instanceof Error ? err.stack : err);
       }
     }
 
@@ -83,7 +80,7 @@ export class CacheLoaderService<T extends IEntity> {
           id,
           days,
           (removedTypename, removedId) => {
-            this.logger.logRelationDisposal(removedTypename, removedId);
+            this.logger.log(`[RELATION DISPOSAL] Removing orphaned ${removedTypename}:${removedId} from active tracking.`);
             this.onRelationDisposed.next({
               typeName: removedTypename,
               id: removedId,
@@ -97,11 +94,8 @@ export class CacheLoaderService<T extends IEntity> {
       this.cacheStore.fullyLoadedKeys.add(queryKey);
     }
 
-    this.logger.logAggregationComplete(
-      `PRELOAD_CURRENT_WINDOW`,
-      Date.now() - start,
-      days,
-    );
+    const daysLabelComplete = days && days.length > 0 ? ` [Days: ${days.join(',')}]` : '';
+    this.logger.debug(`[AGGREGATION COMPLETE] PRELOAD_CURRENT_WINDOW${daysLabelComplete} built in ${Date.now() - start}ms.`);
   }
 
   public async aggregateFromSources(
@@ -123,7 +117,7 @@ export class CacheLoaderService<T extends IEntity> {
       );
       allFragments.push(...entityFragments);
     } catch (err) {
-      this.logger.logError(`Aggregation fetch error for ${entityName}`, err);
+      this.logger.error(`[ERROR] Aggregation fetch error for ${entityName}`, err instanceof Error ? err.stack : err);
     }
 
     const mergedMap = processFetchedFragments<T>(allFragments, days);
@@ -135,7 +129,8 @@ export class CacheLoaderService<T extends IEntity> {
       }
     }
 
-    this.logger.logAggregationComplete(entityName, Date.now() - start, days);
+    const daysLabelComplete2 = days && days.length > 0 ? ` [Days: ${days.join(',')}]` : '';
+    this.logger.debug(`[AGGREGATION COMPLETE] ${entityName}${daysLabelComplete2} built in ${Date.now() - start}ms.`);
 
     if (this.config.relations?.[entityName] && primaryEntities.length > 0) {
       const relatedNames = this.config.relations[entityName];
@@ -147,7 +142,7 @@ export class CacheLoaderService<T extends IEntity> {
         days,
         dataGroup,
       );
-      this.logger.logAssociationHydration(entityName, assocCount);
+      this.logger.debug(`[RELATION HYDRATION] Fetched and stored ${assocCount} associated entities for ${entityName}.`);
     }
 
     return primaryEntities;
@@ -222,7 +217,7 @@ export class CacheLoaderService<T extends IEntity> {
         });
       }
     } catch (err) {
-      this.logger.logError(`Assoc Fetch error for ${relatedName}`, err);
+      this.logger.error(`[ERROR] Assoc Fetch error for ${relatedName}`, err instanceof Error ? err.stack : err);
     }
 
     return entityMap;
@@ -233,16 +228,12 @@ export class CacheLoaderService<T extends IEntity> {
 
     if (existing) {
       const originalDays = (existing.data as unknown as ITimeDependentEntity).days;
-      const originalDaysStr = originalDays
-        ? JSON.stringify([...originalDays].sort())
-        : undefined;
+      const originalDaysStr = originalDays ? JSON.stringify([...originalDays].sort()) : undefined;
 
       mergeChanges(existing.data, completeEntity, onRelationDisposed);
 
       const newDays = (existing.data as unknown as ITimeDependentEntity).days;
-      const newDaysStr = newDays
-        ? JSON.stringify([...newDays].sort())
-        : undefined;
+      const newDaysStr = newDays ? JSON.stringify([...newDays].sort()) : undefined;
 
       if (originalDays && newDays && originalDaysStr !== newDaysStr) {
         this.cacheStore.reindex(existing, name, id, originalDays, newDays);
@@ -252,6 +243,7 @@ export class CacheLoaderService<T extends IEntity> {
     } else {
       this.cacheStore.storeInCache(completeEntity, name, id, days);
       const newItem = this.cacheStore.getExistingCacheItem(name, id, days);
+
       return { item: newItem, isNew: true };
     }
   }

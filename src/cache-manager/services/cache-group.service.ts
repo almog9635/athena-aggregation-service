@@ -31,12 +31,14 @@ export class CacheGroupManager {
             const filterHash = Buffer.from(JSON.stringify(subscriberFilters)).toString('base64');
             key += `#${filterHash}`;
         }
+
         return key;
     }
 
     public registerRootSubscription(entityName: string, queryKey: string,
         days?: string[], dataGroup?: string, subscriberFilters?: Record<string, any>): void {
         if (!dataGroup) {
+            ``
             return;
         }
 
