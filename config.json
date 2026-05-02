@@ -14,15 +14,22 @@
         },
         "entitySettings": {
             "User": {
-                "pollingIntervalMs": 150000,
-                "discoveryIntervalMs": 150000
+                "pollingIntervalMs": 10000,
+                "discoveryIntervalMs": 10000
+            },
+            "Mission": {
+                "pollingIntervalMs": 10000,
+                "discoveryIntervalMs": 10000
             }
         },
         "dataGroupMapping": {
             "UserBasic": [
                 {
                     "entityName": "User",
-                    "fields": ["name", "email"],
+                    "fields": [
+                        "name",
+                        "email"
+                    ],
                     "defaultTimeRange": {
                         "pastDays": 3,
                         "futureDays": 3
@@ -32,10 +39,25 @@
             "UserHistory": [
                 {
                     "entityName": "User",
-                    "fields": ["loginHistory"],
+                    "fields": [
+                        "loginHistory"
+                    ],
                     "defaultTimeRange": {
                         "pastDays": 30,
                         "futureDays": 0
+                    }
+                }
+            ],
+            "MissionBasic": [
+                {
+                    "entityName": "Mission",
+                    "fields": [
+                        "target",
+                        "commanderId"
+                    ],
+                    "defaultTimeRange": {
+                        "pastDays": 3,
+                        "futureDays": 3
                     }
                 }
             ]

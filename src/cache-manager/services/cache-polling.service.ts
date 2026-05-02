@@ -61,7 +61,7 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
         midnight.setHours(24, 0, 0, 0); // Next midnight
         const msUntilMidnight = midnight.getTime() - now.getTime();
 
-        this.logger.log(`[UPDATE] Scheduling Midnight Rollover in ${Math.round(msUntilMidnight / 1000 / 60)} minutes polled new version: 0. Modified fields merged.`);
+        this.logger.log(`[UPDATE] Scheduling Midnight Rollover in ${Math.round(msUntilMidnight / 1000 / 60)} minutes.`);
 
         this.rolloverIntervalId = setTimeout(() => {
             this.executeRollover();
@@ -256,7 +256,7 @@ export class CachePollingService<T extends IEntity> implements OnModuleDestroy {
     }
 
     private async executeRollover() {
-        this.logger.log(`[UPDATE] Starting midnight rollover session polled new version: 0. Modified fields merged.`);
+        this.logger.log(`[UPDATE] Starting midnight rollover session.`);
 
         // 1. Determine all active days across all configurations
         const activeDaysList = this.getActiveDays();

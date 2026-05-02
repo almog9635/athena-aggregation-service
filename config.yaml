@@ -11,11 +11,11 @@ cache:
     futureDays: 30
   entitySettings:
     User:
-      pollingIntervalMs: 300000 
-      discoveryIntervalMs: 300000 
+      pollingIntervalMs: 10000 
+      discoveryIntervalMs: 10000 
     Mission:
-      pollingIntervalMs: 1200000 
-      discoveryIntervalMs: 1200000 
+      pollingIntervalMs: 10000 
+      discoveryIntervalMs: 10000 
   dataGroupMapping:
     UserBasic:
       - entityName: User
@@ -32,3 +32,11 @@ cache:
         defaultTimeRange:
           pastDays: 30
           futureDays: 0
+    MissionBasic:
+      - entityName: Mission
+        fields:
+          - target
+          - commanderId
+        defaultTimeRange:
+          pastDays: 3
+          futureDays: 3

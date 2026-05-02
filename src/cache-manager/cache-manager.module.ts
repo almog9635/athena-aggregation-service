@@ -20,6 +20,7 @@ export class CacheManagerModule {
      */
     static register<T extends IEntity>(options?: { dataSource?: IDataSource<T> }): DynamicModule {
         return {
+            global: true,
             module: CacheManagerModule,
             imports: [ConfigModule, GraphQLStitchingModule],
             providers: [

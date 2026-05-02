@@ -83,16 +83,31 @@ export class CacheStore<T extends IEntity> {
                 }
             }
         } else {
-            const entityMap = this.timeIndependentMap.get(entityName);
-
-            if (entityMap) {
-                for (const [, item] of entityMap) {
+            // Get from time-independent map
+            const indepMap = this.timeIndependentMap.get(entityName);
+            if (indepMap) {
+                for (const [, item] of indepMap) {
                     results.push(item.data);
+                }
+            }
+
+            // Get from ALL time-dependent maps
+            for (const dayMap of this.timeDependentMap.values()) {
+                const depMap = dayMap.get(entityName);
+                if (depMap) {
+                    for (const [, item] of depMap) {
+                        results.push(item.data);
+                    }
                 }
             }
         }
 
-        return results;
+        // Deduplicate in case an entity exists across multiple days
+        const uniqueResults = new Map<string, T>();
+        for (const item of results) {
+            uniqueResults.set(item.id, item);
+        }
+        return Array.from(uniqueResults.values());
     }
 
     public getAllEntityNames(): string[] {
